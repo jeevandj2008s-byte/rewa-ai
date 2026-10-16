@@ -121,6 +121,9 @@ ReWA.AI is a Streamlit app, so it is hosted on Streamlit Community Cloud (free),
      `redirect_uri` to `https://<your-app-name>.streamlit.app/oauth2callback`.
      Add AI keys here too if you use them, e.g. `GEMINI_API_KEY = "your-key"`.
 5. Click **Deploy**. The first build installs torch and downloads CLIP, so it takes a few minutes.
+   The app uses the smaller `openai/clip-vit-base-patch32` model by default, because the large
+   model runs out of memory on Streamlit Cloud. To use a different model, add
+   `REWA_MODEL = "openai/clip-vit-large-patch14"` to Secrets (only on a server with enough RAM).
 6. In Google Cloud Console, add the same `https://<your-app-name>.streamlit.app/oauth2callback`
    to your OAuth client's **Authorized redirect URIs**, or Google sign-in will fail.
 
