@@ -91,7 +91,7 @@ The first run downloads the CLIP model, so it can take a minute and needs intern
 
 ---
 
-## 🔐 Setting up sign-in (optional)
+## 🔐 Setting up sign-in 
 
 Create `.streamlit/secrets.toml`:
 ```toml
