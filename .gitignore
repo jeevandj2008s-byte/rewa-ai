@@ -1,0 +1,11 @@
+.streamlit/secrets.toml
+**/secrets.toml
+**/secreats.toml
+__pycache__/
+*.pyc
+*.db
+.venv/
+venv/
+.env*
+.vercel
+.vscode/
