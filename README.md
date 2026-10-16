@@ -84,9 +84,8 @@ cd <your-repo>
 ### 2. Install the requirements
 You need **Python 3.10+**.
 ```bash
-pip install streamlit transformers torch pillow altair pandas requests google-genai Authlib
+pip install -r requirements.txt
 ```
-Or: `pip install -r requirements.txt` if you add that file.
 
 ### 3. (Optional) Add your AI keys
 Without keys the app still works. ReWA Buddy just uses built-in rules.
@@ -99,9 +98,35 @@ On Windows PowerShell use `$env:GEMINI_API_KEY="your-key"`.
 
 ### 4. Start the app
 ```bash
-streamlit run app.py
+streamlit run app1.py
 ```
 The first run downloads the CLIP model, so it can take a minute and needs internet.
+
+---
+
+## 🌍 Deploy it publicly (Streamlit Community Cloud)
+
+ReWA.AI is a Streamlit app, so it is hosted on Streamlit Community Cloud (free), not Vercel.
+
+1. Go to https://share.streamlit.io and sign in with GitHub.
+2. Click **Create app** → **Deploy a public app from GitHub**.
+3. Fill in:
+   - **Repository:** `jeevandj2008s-byte/rewa-ai`
+   - **Branch:** `main`
+   - **Main file path:** `app1.py`
+   - **App URL:** pick a name, e.g. `rewa-ai`
+4. Open **Advanced settings**:
+   - **Python version:** 3.11
+   - **Secrets:** paste the contents of your local `.streamlit/secrets.toml`, changing
+     `redirect_uri` to `https://<your-app-name>.streamlit.app/oauth2callback`.
+     Add AI keys here too if you use them, e.g. `GEMINI_API_KEY = "your-key"`.
+5. Click **Deploy**. The first build installs torch and downloads CLIP, so it takes a few minutes.
+6. In Google Cloud Console, add the same `https://<your-app-name>.streamlit.app/oauth2callback`
+   to your OAuth client's **Authorized redirect URIs**, or Google sign-in will fail.
+
+The app is public by default — anyone with the link can open it. Every `git push` to `main` redeploys it automatically.
+
+> Note: the SQLite database lives on the server's disk, which Streamlit Cloud resets on restart/redeploy, so saved points and history can be lost. Use a hosted database if you need them to persist.
 
 ---
 
