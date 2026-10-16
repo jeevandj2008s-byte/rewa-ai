@@ -7,12 +7,20 @@ ReWA.AI helps you answer this simple question: **"What is the waste? How can I r
 You take a photo of a waste item. The app uses AI to guess what it is, suggests the right bin, and guides you how to recycle it, dispose of it and reuse it. Every item you sort earns virtual **Eco Points**, so recycling feels like a game.
 
 > 📸
-> [ReWA.AI Homepage](screenshot.png)
-> [AI-Powered Waste Assistant]
-> [Smart Recycling Guidance]
-> [Digital Twin - Virtual Waste Bins]
-> [Analytics and Recycling Statistics]
-> [Eco Points and Daily Streak]
+> [ReWA.AI Homepage](<img width="1887" height="912" alt="Screenshot 2026-10-16 152509" src="https://github.com/user-attachments/assets/eaa25895-1696-4426-98bd-b4d37f89bf75" />
+)
+> [AI-Powered Waste Assistant](<img width="1897" height="906" alt="Screenshot 2026-10-16 152556" src="https://github.com/user-attachments/assets/cb9c5e97-1bf3-4229-8caf-e5fc145e3697" />
+)
+> [Smart Recycling Guidance](<img width="1896" height="901" alt="Screenshot 2026-10-16 152614" src="https://github.com/user-attachments/assets/d3a63aa9-25f2-4e76-bbed-7e76e0a620fd" />
+)
+
+> [Digital Twin - Virtual Waste Bins](<img width="1912" height="896" alt="Screenshot 2026-10-16 152745" src="https://github.com/user-attachments/assets/b509d3e1-fd8f-4c74-bd86-e81863dfe97a" />
+)
+> [Analytics and Recycling Statistics](<img width="1897" height="891" alt="Screenshot 2026-10-16 152710" src="https://github.com/user-attachments/assets/cebbd70d-776d-47f9-bbb1-fb92a45debc1" />
+)
+> [Eco Points and Daily Streak](<img width="1910" height="900" alt="Screenshot 2026-10-16 152824" src="https://github.com/user-attachments/assets/ca0af40a-1098-4ab1-96dd-9af344b002d3" />
+)
+)
 
 ---
 
