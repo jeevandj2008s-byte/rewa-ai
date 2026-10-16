@@ -122,8 +122,4 @@ def claim_legacy_events(user_id):
         (user_id, LEGACY_USER)
     )
     connection.commit()
-<<<<<<< HEAD
     connection.close()
-=======
-    connection.close()
->>>>>>> 3d0b8b78da8974291b0688d9face662d07811056

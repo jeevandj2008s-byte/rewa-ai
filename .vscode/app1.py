@@ -14,6 +14,7 @@ import streamlit as st
 from PIL import Image
 from transformers import pipeline
 
+import auth
 import data_base
 import rewa_logic
 import rewards as rewards_module
@@ -36,6 +37,13 @@ st.set_page_config(
     page_icon="♻️",
     layout="wide"
 )
+
+# Block the page until the visitor is signed in, then tell the database
+# who is using it. (set_page_config must stay the first Streamlit call,
+# so the login goes right after it.)
+current_user = auth.require_login()
+data_base.set_current_user(current_user["id"])
+
 create_data_base()
 init_rewards_db()
 
@@ -2347,39 +2355,11 @@ def _table_columns(cur, table):
 
 # ---------- CLEAR RECYCLING EVENTS ----------
 def clear_all_events():
-    """Delete every saved recycling event from the SQLite database.
+    """Delete only the signed-in user's recycling events.
 
-    Eco Points and streak tables are intentionally left untouched, because
-    they do not contain both 'item_name' and 'material' columns.
+    Eco Points and streaks are left untouched.
     """
-    db_path = (
-        getattr(data_base, "DB_NAME", None)
-        or getattr(data_base, "DB_PATH", None)
-        or getattr(data_base, "DATABASE", None)
-        or "recycling.db"
-    )
-
-    if not os.path.exists(db_path):
-        raise FileNotFoundError(f"Database file not found: {db_path}")
-
-    conn = sqlite3.connect(db_path)
-    try:
-        cur = conn.cursor()
-        tables = [
-            row[0]
-            for row in cur.execute(
-                "SELECT name FROM sqlite_master "
-                "WHERE type='table' AND name NOT LIKE 'sqlite_%'"
-            )
-        ]
-        for table in tables:
-            columns = _table_columns(cur, table)
-            # Only touch the table that stores recycling events
-            if "item_name" in columns and "material" in columns:
-                cur.execute(f'DELETE FROM "{table}"')
-        conn.commit()
-    finally:
-        conn.close()
+    data_base.clear_events()
 
 
 # ---------- CLEAR ECO POINTS / REWARDS ----------
@@ -3148,6 +3128,21 @@ if st.session_state.flash:
         st.success(flash_text)
     else:
         st.warning(flash_text)
+
+# ---------- ACCOUNT BAR + ONE-TIME ADOPTION OF PRE-LOGIN RECORDS ----------
+auth.account_bar(current_user)
+
+# Records saved before sign-in existed belong to no one yet; let the
+# signed-in person claim them once.
+legacy_total = data_base.count_legacy_events()
+if legacy_total:
+    st.info(
+        f"Found {legacy_total} recycling event(s) saved before sign-in existed."
+    )
+    if st.button("Add them to my account", key="claim_legacy"):
+        data_base.claim_legacy_events(current_user["id"])
+        rebuild_bins_from_database()
+        st.rerun()
 
 # ---------- WHAT IS REWA? (problem -> solution -> action) ----------
 st.markdown(
