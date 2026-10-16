@@ -6,7 +6,13 @@ ReWA.AI helps you answer this simple question: **"What is the waste? How can I r
 
 You take a photo of a waste item. The app uses AI to guess what it is, suggests the right bin, and guides you how to recycle it, dispose of it and reuse it. Every item you sort earns virtual **Eco Points**, so recycling feels like a game.
 
-> 📸 *Add a screenshot of the app here:* `![ReWA.AI screenshot](screenshot.png)`
+> 📸
+> [ReWA.AI Homepage](screenshot.png)
+> [AI-Powered Waste Assistant]
+> [Smart Recycling Guidance]
+> [Digital Twin - Virtual Waste Bins]
+> [Analytics and Recycling Statistics]
+> [Eco Points and Daily Streak]
 
 ---
 
@@ -141,7 +147,7 @@ The tests check reward logic (no double points), image validation, badges, garde
 ---
 
 ## 👩‍💻 Author
-Made by **Jeevan DJ and J.Jebastin Immanuvel** — *Bangalore Institution of Technology-Information Science Engineering*
+Made by **Jeevan DJ and J.Jebastin Immanuvel** — *Bangalore Institution of Technology-Information Science Engineering(1st Year)*
 
 ## 📄 License
 This project is licensed under the MIT License.
