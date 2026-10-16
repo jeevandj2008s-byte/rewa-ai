@@ -1,5 +1,10 @@
+import logging
+import re
 from datetime import datetime
+
 from data_base import create_data_base, save_event
+
+logger = logging.getLogger("rewa")
 
 # 1. Bins (Hazardous + Biodegradable added)
 BIN_IDS = {
@@ -36,13 +41,21 @@ ITEM_TO_BIN = {
     "aluminium can": "Metal", "metal can": "Metal", "tin can": "Metal",
     "glass bottle": "Glass", "glass jar": "Glass",
     "battery": "Hazardous", "medicine": "Hazardous", "light bulb": "Hazardous",
+    "syringe or needle": "Hazardous", "medical waste": "Hazardous",
+    "biohazard waste": "Hazardous", "chemical container": "Hazardous",
+    "aerosol can": "Hazardous", "paint can": "Hazardous",
+    "pesticide or poison": "Hazardous",
     "food waste": "Biodegradable", "fruit peel": "Biodegradable",
     "leaves": "Biodegradable",
 }
 
-# Fallback keywords, checked in this order
+# Fallback keywords, checked in this order (whole words only, so "tin"
+# no longer matches inside words like "painting")
 KEYWORDS = [
-    ("Hazardous", ["battery", "chemical", "paint", "bulb", "medicine", "e-waste"]),
+    ("Hazardous", ["battery", "chemical", "paint", "bulb", "medicine",
+                   "e-waste", "syringe", "needle", "sharps", "medical",
+                   "biohazard", "aerosol", "pesticide", "poison",
+                   "hazardous"]),
     ("Biodegradable", ["food", "peel", "leaf", "leaves", "vegetable", "fruit"]),
     ("Glass", ["glass"]),
     ("Metal", ["metal", "aluminium", "aluminum", "tin", "steel", "can"]),
@@ -51,18 +64,32 @@ KEYWORDS = [
 ]
 
 
+def _has_word(text, word):
+    """True if `word` (or its plural) appears as a whole word in `text`."""
+    return re.search(rf"\b{re.escape(word)}s?\b", text) is not None
+
+
 def get_bin_for_item(item_name):
     name = item_name.strip().lower()
     if name in ITEM_TO_BIN:
         return ITEM_TO_BIN[name]
     for bin_name, words in KEYWORDS:
-        if any(w in name for w in words):
+        if any(_has_word(name, w) for w in words):
             return bin_name
     return None  # unknown -> NOT Plastic
 
 
 # 3. Record a new recycling event
-def record_item(waste_type, item_name, state=None):
+def record_item(waste_type, item_name, state=None, persist=True):
+    """Add one item to a bin.
+
+    persist=True  -> also save the event in the database (logged-in users).
+    persist=False -> bin only (guests: nothing is saved).
+
+    The database write happens FIRST. If it fails, the bin is left
+    untouched, so the bins and the saved history can never disagree.
+    Returns True on success, False otherwise.
+    """
     if state is None:
         state = bins
 
@@ -70,14 +97,29 @@ def record_item(waste_type, item_name, state=None):
     target = waste_type if waste_type in state else get_bin_for_item(item_name)
 
     if target not in state:
-        print(f"No bin for '{item_name}' (got '{waste_type}'). Not recorded.")
+        logger.warning("No bin for '%s' (got '%s'). Not recorded.",
+                       item_name, waste_type)
         return False
 
     selected_bin = state[target]
 
     if selected_bin["capacity_percent"] >= 100:
-        print(f"{target} bin is full! Please empty it first.")
+        logger.warning("%s bin is full! Please empty it first.", target)
         return False
+
+    now = datetime.now()
+
+    if persist:
+        try:
+            create_data_base()
+            save_event(
+                material=target,
+                item_name=item_name,
+                timestamp=now.isoformat(timespec="seconds"),
+            )
+        except Exception as error:
+            logger.warning("Could not save recycling event: %s", error)
+            return False
 
     selected_bin["item_count"] += 1
 
@@ -86,20 +128,11 @@ def record_item(waste_type, item_name, state=None):
         selected_bin["capacity_percent"] + 5, 100
     )
 
-    now = datetime.now()
-
     selected_bin["history"].append({
         "item": item_name,
         "waste_type": target,
         "time": now.strftime("%H:%M:%S"),
     })
-
-    create_data_base()
-    save_event(
-        material=target,
-        item_name=item_name,
-        timestamp=now.isoformat(timespec="seconds"),
-    )
     return True
 
 
@@ -108,7 +141,7 @@ def empty_bin(waste_type, state=None):
     if state is None:
         state = bins
     if waste_type not in state:
-        print("Unknown bin!")
+        logger.warning("Unknown bin: %s", waste_type)
         return False
 
     b = state[waste_type]
@@ -135,6 +168,7 @@ def show_dashboard():
         print(f"Items: {data['item_count']}")
         print(f"Estimated capacity: {data['capacity_percent']}%")
         print(f"Times emptied: {data['times_emptied']}")
+
 
 # Run test events only when this file is run directly
 if __name__ == "__main__":

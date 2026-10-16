@@ -1,0 +1,18 @@
+[auth]
+# Note: Streamlit's default port is 8501.
+redirect_uri = "http://localhost:8501/oauth2callback"
+cookie_secret = "rewa-ai-secure-cookie-secret-key-32chars"
+# Replace 'xxx' with your real Google Cloud OAuth Client ID & Secret:
+client_id = "xxx.apps.googleusercontent.com"
+client_secret = "xxx"
+server_metadata_url = "https://accounts.google.com/.well-known/openid-configuration"
+
+# Enables Instant Demo login for local testing:
+[dev]
+enabled = true
+
+# Optional: Add your Twilio credentials if using Phone SMS OTP:
+# [twilio]
+# account_sid = "ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+# auth_token = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+# verify_sid = "VAxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"

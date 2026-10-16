@@ -38,11 +38,14 @@ st.set_page_config(
     layout="wide"
 )
 
-# Block the page until the visitor is signed in, then tell the database
-# who is using it. (set_page_config must stay the first Streamlit call,
-# so the login goes right after it.)
-current_user = auth.require_login()
+# Everyone can open the site. A visitor who has not logged in is a "guest":
+# they can try the classifier and fill the virtual bins for this visit, but
+# nothing is saved and no Eco Points are earned. Logging in (the Log in panel at the top)
+# lets them save items and earn Eco Points.
+# (set_page_config must stay the first Streamlit call, so this goes after it.)
+current_user = auth.resolve_user()
 data_base.set_current_user(current_user["id"])
+is_guest = current_user["is_guest"]
 
 create_data_base()
 init_rewards_db()
@@ -2149,6 +2152,21 @@ div.stButton > button[data-testid="stBaseButton-primary"]:hover {
 </style>
 """
 
+# Adds the Log in / account panel styles (defined in auth.py)
+THEME_CSS += "\n" + auth.CORNER_CSS
+
+# The Log in button's position and click-fixes now live ONLY in
+# auth.CORNER_CSS (one place). Here we just keep the centred nav pill clear
+# of the button on narrow screens.
+THEME_CSS += """
+<style>
+@media (max-width: 1000px) {
+    .topnav { top: 66px; }
+    .block-container { padding-top: 8.4rem !important; }
+}
+</style>
+"""
+
 NAV_HTML = (
     '<div class="topnav" role="navigation" aria-label="Page sections">'
     '<a class="brand" href="#top"><span class="ic">♻️</span><span class="tx">ReWA.AI</span></a>'
@@ -2800,10 +2818,33 @@ def _award_in_database(uid, label, category):
 def record_and_reward(item, category):
     """Record one analysed image in its recycling bin and award its Eco Points.
 
-    The real work lives in rewa_logic.record_and_reward (which has unit
-    tests). Returns a (status, detail) tuple; see that function for the
-    meaning of each status.
+    Logged-in users: the real work lives in rewa_logic.record_and_reward
+    (which has unit tests). It returns a (status, detail) tuple.
+
+    Guests: the item is added to the virtual bin for this visit only. Nothing
+    is saved in the database and no Eco Points are given (status "guest_ok").
     """
+    if is_guest:
+        uid = item["uid"]
+        fingerprint = item.get("fingerprint")
+        if uid in st.session_state.recorded_uids:
+            return "duplicate", None
+        if fingerprint and fingerprint in st.session_state.recorded_fingerprints:
+            return "same_photo", None
+        added = record_item(
+            category,
+            item["best_label"],
+            st.session_state.digital_twin_bins,
+            persist=False,
+        )
+        if not added:
+            return "full", None
+        st.session_state.recorded_uids.add(uid)
+        st.session_state.recorded_bins[uid] = category
+        if fingerprint:
+            st.session_state.recorded_fingerprints.add(fingerprint)
+        return "guest_ok", None
+
     return rewa_logic.record_and_reward(
         item["uid"],
         item["best_label"],
@@ -2824,6 +2865,17 @@ def status_message(status, detail, label, category):
     """Turn a record_and_reward status into a (kind, text) message."""
     if detail:
         logger.warning("record_and_reward %s: %s", status, detail)
+    if status == "login":
+        return "warning", (
+            "Please log in (Log in panel at the top) to save items and earn "
+            "Eco Points."
+        )
+    if status == "guest_ok":
+        return "success", (
+            f"✅ {label} added to the {category} bin for this visit. "
+            "As a guest nothing is saved and no Eco Points are earned: "
+            "log in (Log in panel at the top) to save items and earn points."
+        )
     if status == "ok":
         return "success", (
             f"🌟 +{POINTS_PER_EVENT} Eco Points! {label} recorded in the "
@@ -2845,8 +2897,9 @@ def status_message(status, detail, label, category):
         )
     if status == "full":
         return "warning", (
-            f"Could not add the item: the {category} bin may be full "
-            "(simulated). Empty it below and try again."
+            f"Could not add the item to the {category} bin. It may be full "
+            "(simulated: empty it below) or the database may be busy. "
+            "Please try again."
         )
     return "warning", "Could not record the item. Please try again."
 
@@ -3105,6 +3158,11 @@ if show_intro:
         unsafe_allow_html=True
     )
 
+# ---------- LOGIN / ACCOUNT PANEL (top of the page) ----------
+# A normal block in the page flow (not pinned, not a pop-up), so nothing can
+# cover it and it always responds to clicks. See auth.py.
+auth.account_corner(current_user)
+
 # NOTE: all HTML below is written without indentation or blank lines
 # (outside the <style> block); Streamlit's markdown would otherwise treat
 # it as a code block.
@@ -3129,20 +3187,43 @@ if st.session_state.flash:
     else:
         st.warning(flash_text)
 
-# ---------- ACCOUNT BAR + ONE-TIME ADOPTION OF PRE-LOGIN RECORDS ----------
-auth.account_bar(current_user)
-
-# Records saved before sign-in existed belong to no one yet; let the
-# signed-in person claim them once.
-legacy_total = data_base.count_legacy_events()
-if legacy_total:
+if is_guest:
     st.info(
-        f"Found {legacy_total} recycling event(s) saved before sign-in existed."
+        "👋 You're browsing as a guest. You can try the classifier and fill "
+        "the virtual bins for this visit, but nothing is saved. Log in (panel at "
+        "the top) to save your items, earn Eco Points and keep your "
+        "streaks."
     )
-    if st.button("Add them to my account", key="claim_legacy"):
-        data_base.claim_legacy_events(current_user["id"])
-        rebuild_bins_from_database()
-        st.rerun()
+elif current_user["provider"] == "public":
+    # No login needed: everything works and is saved on the shared visitor
+    # account. Records saved before sign-in existed are attached to it
+    # automatically, so your old history shows up again.
+    try:
+        if data_base.count_legacy_events() or rewards_module.count_legacy_rewards():
+            data_base.claim_legacy_events(current_user["id"])
+            rewards_module.claim_legacy_rewards(current_user["id"])
+            rebuild_bins_from_database()
+    except Exception as error:
+        logger.warning("Could not attach older records: %s", error)
+    st.caption(
+        "✅ Everything works without logging in. Your items, Eco Points and "
+        "history are saved. (Logging in is optional.)"
+    )
+else:
+    # Records saved before sign-in existed belong to no one yet; let the
+    # signed-in person claim them once.
+    legacy_total = data_base.count_legacy_events()
+    legacy_reward_total = rewards_module.count_legacy_rewards()
+    if legacy_total or legacy_reward_total:
+        st.info(
+            f"Found {legacy_total} recycling event(s) and {legacy_reward_total} "
+            "reward(s) saved before sign-in existed."
+        )
+        if st.button("Add them to my account", key="claim_legacy"):
+            data_base.claim_legacy_events(current_user["id"])
+            rewards_module.claim_legacy_rewards(current_user["id"])
+            rebuild_bins_from_database()
+            st.rerun()
 
 # ---------- WHAT IS REWA? (problem -> solution -> action) ----------
 st.markdown(
@@ -3601,6 +3682,8 @@ if batch:
                 if status == "ok":
                     ok_count += 1
                     points_count += 1
+                elif status == "guest_ok":
+                    ok_count += 1
                 elif status == "rewarded":
                     ok_count += 1
                 elif status == "points_err":
@@ -3619,6 +3702,13 @@ if batch:
                     "warning",
                     f"{ok_count} item(s) recorded. "
                     + " • ".join(problems_found)
+                )
+            elif is_guest:
+                st.session_state.flash = (
+                    "success",
+                    f"✅ {ok_count} item(s) added to your bins for this "
+                    "visit. Log in (Log in panel at the top) to save items and earn "
+                    "Eco Points."
                 )
             else:
                 st.session_state.flash = (
