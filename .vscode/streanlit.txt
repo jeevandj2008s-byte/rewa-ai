@@ -1,3 +1,0 @@
-streanlit
-transformers
-torch 
