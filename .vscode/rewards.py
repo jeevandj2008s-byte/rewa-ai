@@ -311,4 +311,8 @@ def claim_legacy_rewards(user_id):
                 )
             conn.execute("DELETE FROM daily_activity WHERE user_id = ?", (LEGACY_USER,))
     finally:
+<<<<<<< HEAD
         conn.close()
+=======
+        conn.close()
+>>>>>>> 3d0b8b78da8974291b0688d9face662d07811056
