@@ -3,20 +3,11 @@ import re
 from datetime import datetime
 
 from data_base import create_data_base, save_event
+from bin_rules import BIN_IDS, ITEM_TO_BIN, resolve_bin
 
 logger = logging.getLogger("rewa")
 
-# 1. Bins (Hazardous + Biodegradable added)
-BIN_IDS = {
-    "Plastic": "PLASTIC_01",
-    "Paper": "PAPER_01",
-    "Metal": "METAL_01",
-    "Glass": "GLASS_01",
-    "Hazardous": "HAZARDOUS_01",
-    "Biodegradable": "BIO_01",
-}
-
-
+# Single source of truth for Bins and Mappings
 def create_bins():
     return {
         name: {
@@ -32,51 +23,9 @@ def create_bins():
 
 bins = create_bins()
 
-# 2. Explicit item -> bin mapping (never defaults to Plastic)
-ITEM_TO_BIN = {
-    "plastic bottle": "Plastic", "plastic bag": "Plastic",
-    "plastic container": "Plastic", "plastic wrapper": "Plastic",
-    "paper sheet": "Paper", "newspaper": "Paper",
-    "cardboard box": "Paper", "cardboard": "Paper",
-    "aluminium can": "Metal", "metal can": "Metal", "tin can": "Metal",
-    "glass bottle": "Glass", "glass jar": "Glass",
-    "battery": "Hazardous", "medicine": "Hazardous", "light bulb": "Hazardous",
-    "syringe or needle": "Hazardous", "medical waste": "Hazardous",
-    "biohazard waste": "Hazardous", "chemical container": "Hazardous",
-    "aerosol can": "Hazardous", "paint can": "Hazardous",
-    "pesticide or poison": "Hazardous",
-    "food waste": "Biodegradable", "fruit peel": "Biodegradable",
-    "leaves": "Biodegradable",
-}
-
-# Fallback keywords, checked in this order (whole words only, so "tin"
-# no longer matches inside words like "painting")
-KEYWORDS = [
-    ("Hazardous", ["battery", "chemical", "paint", "bulb", "medicine",
-                   "e-waste", "syringe", "needle", "sharps", "medical",
-                   "biohazard", "aerosol", "pesticide", "poison",
-                   "hazardous"]),
-    ("Biodegradable", ["food", "peel", "leaf", "leaves", "vegetable", "fruit"]),
-    ("Glass", ["glass"]),
-    ("Metal", ["metal", "aluminium", "aluminum", "tin", "steel", "can"]),
-    ("Paper", ["paper", "cardboard", "newspaper", "carton"]),
-    ("Plastic", ["plastic", "polythene", "bottle", "bag"]),
-]
-
-
-def _has_word(text, word):
-    """True if `word` (or its plural) appears as a whole word in `text`."""
-    return re.search(rf"\b{re.escape(word)}s?\b", text) is not None
-
 
 def get_bin_for_item(item_name):
-    name = item_name.strip().lower()
-    if name in ITEM_TO_BIN:
-        return ITEM_TO_BIN[name]
-    for bin_name, words in KEYWORDS:
-        if any(_has_word(name, w) for w in words):
-            return bin_name
-    return None  # unknown -> NOT Plastic
+    return resolve_bin(item_name)
 
 
 # 3. Record a new recycling event

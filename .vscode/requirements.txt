@@ -1,6 +1,6 @@
 --extra-index-url https://download.pytorch.org/whl/cpu
 streamlit>=1.42
-Authlib
+supabase>=2.0.0,<=2.33.0
 transformers
 torch
 pillow

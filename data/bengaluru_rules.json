@@ -1,0 +1,192 @@
+{
+  "_meta": {
+    "city": "Bengaluru",
+    "framework": "BBMP 2-Bin 1-Bag Segregation System",
+    "ward_variation_note": "Segregation rules and collection schedules can vary across BBMP wards, residential welfare associations (RWAs), and gated communities. Please verify specific timings and dry waste collection center (DWCC) locations with your local ward BBMP office."
+  },
+  "rules": {
+    "cardboard box": {
+      "bin": "Paper",
+      "bengaluru_category": "Dry Waste",
+      "guidance": "Flatten boxes and keep them dry. Hand over on dry waste collection days or to the local Dry Waste Collection Centre (DWCC).",
+      "edge_cases": "If contaminated with food, grease, or oil (e.g., bottom of pizza boxes), cut off and compost/discard the greasy section in Wet Waste; recycle only the clean dry portions.",
+      "source": "BBMP Solid Waste Management Bye-laws 2020"
+    },
+    "paper sheet": {
+      "bin": "Paper",
+      "bengaluru_category": "Dry Waste",
+      "guidance": "Keep clean and dry in your white/blue dry waste bag.",
+      "edge_cases": "Shredded paper, wet paper, or tissue paper with bodily fluids cannot be recycled as paper (soiled tissue goes to sanitary waste).",
+      "source": "BBMP Solid Waste Management Bye-laws 2020"
+    },
+    "newspaper": {
+      "bin": "Paper",
+      "bengaluru_category": "Dry Waste",
+      "guidance": "Bundle and keep dry. Highly valued for recycling and widely accepted by local raddiwala / DWCCs.",
+      "edge_cases": "Clean newspapers can also be reused to wrap sanitary waste before disposal. Do not include oiled or food-wrapped newspaper in paper recycling.",
+      "source": "BBMP Solid Waste Management Bye-laws 2020"
+    },
+    "plastic bottle": {
+      "bin": "Plastic",
+      "bengaluru_category": "Dry Waste",
+      "guidance": "Rinse clean, drain completely, and crush to save space in the dry waste bag.",
+      "edge_cases": "Remove beverage caps and rings if required by your local DWCC. Bottles with toxic chemicals must go to Domestic Hazardous Waste.",
+      "source": "BBMP Solid Waste Management Bye-laws 2020"
+    },
+    "plastic bag": {
+      "bin": "Plastic",
+      "bengaluru_category": "Dry Waste",
+      "guidance": "Clean, dry polythene bags go to Dry Waste collection. Karnataka has a ban on single-use plastic carry bags (<100 microns).",
+      "edge_cases": "Dirty or food-stained bags must be rinsed and dried before bagging. Wet or decomposing food inside plastic bags contaminates entire dry waste batches.",
+      "source": "BBMP Solid Waste Management Bye-laws 2020 (NEEDS VERIFICATION for micron threshold updates)"
+    },
+    "plastic wrapper": {
+      "bin": "Plastic",
+      "bengaluru_category": "Dry Waste",
+      "guidance": "Clean wrappers and multilayer plastic packaging (MLP) go into the dry waste bag for DWCC collection.",
+      "edge_cases": "Chips packets, biscuit wrappers, and laminated foils are non-recyclable via standard mechanical recycling but are collected in dry waste for coprocessing in cement kilns.",
+      "source": "BBMP & Hasiru Dala Dry Waste Framework (NEEDS VERIFICATION)"
+    },
+    "plastic container": {
+      "bin": "Plastic",
+      "bengaluru_category": "Dry Waste",
+      "guidance": "Wash out food residue, drain dry, and place in dry waste.",
+      "edge_cases": "Containers holding paints, motor oil, or pesticides must go to Domestic Hazardous Waste.",
+      "source": "BBMP Solid Waste Management Bye-laws 2020"
+    },
+    "metal can": {
+      "bin": "Metal",
+      "bengaluru_category": "Dry Waste",
+      "guidance": "Rinse out food or beverage residues and place in the dry waste bin.",
+      "edge_cases": "Be careful of sharp metal edges. Aerosol or pressurized spray cans must be placed with Domestic Hazardous Waste, NOT ordinary metal cans.",
+      "source": "BBMP Solid Waste Management Bye-laws 2020"
+    },
+    "aluminium can": {
+      "bin": "Metal",
+      "bengaluru_category": "Dry Waste",
+      "guidance": "Rinse and crush. Recyclable infinitely through dry waste channels.",
+      "edge_cases": "Do not mix with corrosive substances.",
+      "source": "BBMP Solid Waste Management Bye-laws 2020"
+    },
+    "tin can": {
+      "bin": "Metal",
+      "bengaluru_category": "Dry Waste",
+      "guidance": "Rinse thoroughly to prevent attracting pests, then place in dry waste.",
+      "edge_cases": "Fold sharp lid edges inwards to protect waste pickers from injury.",
+      "source": "BBMP Solid Waste Management Bye-laws 2020"
+    },
+    "glass bottle": {
+      "bin": "Glass",
+      "bengaluru_category": "Dry Waste",
+      "guidance": "Rinse and keep intact. Place separately in dry waste or hand over carefully to waste collectors.",
+      "edge_cases": "Broken glass must be carefully wrapped in thick newspaper or cardboard and labeled 'Broken Glass' to protect sanitation workers. Window glass and mirrors have different melting points and are treated as reject waste.",
+      "source": "BBMP Solid Waste Management Bye-laws 2020"
+    },
+    "glass jar": {
+      "bin": "Glass",
+      "bengaluru_category": "Dry Waste",
+      "guidance": "Wash out pickles/sauces and place in dry waste or reuse at home for storage.",
+      "edge_cases": "Remove metal or plastic lids and sort each into its respective material category.",
+      "source": "BBMP Solid Waste Management Bye-laws 2020"
+    },
+    "food waste": {
+      "bin": "Biodegradable",
+      "bengaluru_category": "Wet Waste",
+      "guidance": "Place in the Green Bin (Wet Waste) without any plastic liner or bag. Collected daily by BBMP pourakarmikas for biomethanation or composting.",
+      "edge_cases": "Never dispose of food waste inside plastic carry bags. Drain excessive gravies or soups before binning.",
+      "source": "BBMP Solid Waste Management Bye-laws 2020"
+    },
+    "fruit peel": {
+      "bin": "Biodegradable",
+      "bengaluru_category": "Wet Waste",
+      "guidance": "Directly into the Green Bin (Wet Waste) or home composting pit. Excellent organic compost material.",
+      "edge_cases": "Remove fruit packaging stickers or plastic net packaging before disposal.",
+      "source": "BBMP Solid Waste Management Bye-laws 2020"
+    },
+    "leaves": {
+      "bin": "Biodegradable",
+      "bengaluru_category": "Wet Waste",
+      "guidance": "Garden and dry leaves should be composted locally or handed over with garden waste. Burning leaves is strictly prohibited and fined under BBMP bye-laws.",
+      "edge_cases": "Large branches or landscaping bulk should not be dumped in daily wet bins; contact BBMP for bulk garden waste pickup.",
+      "source": "BBMP Clean Air & SWM Bye-laws (NEEDS VERIFICATION)"
+    },
+    "battery": {
+      "bin": "Hazardous",
+      "bengaluru_category": "Domestic Hazardous / E-Waste",
+      "guidance": "Do not throw in household wet or dry bins. Store dry in a sealed box and take to a designated e-waste drop-off bin or authorized recycler.",
+      "edge_cases": "Tape the terminals of lithium or button batteries with tape to prevent short circuits and fires in collection bins.",
+      "source": "E-Waste Management Rules 2022 / KSPCB"
+    },
+    "light bulb": {
+      "bin": "Hazardous",
+      "bengaluru_category": "Domestic Hazardous / E-Waste",
+      "guidance": "CFLs and fluorescent tube lights contain toxic mercury vapour. Hand over carefully wrapped during hazardous/e-waste collection.",
+      "edge_cases": "If broken, ventilate the room for 15 minutes, sweep up using cardboard (do not vacuum), and seal in a plastic bag marked 'Mercury Hazard'.",
+      "source": "KSPCB Guidelines on Hazardous Household Waste (NEEDS VERIFICATION)"
+    },
+    "medicine": {
+      "bin": "Hazardous",
+      "bengaluru_category": "Domestic Hazardous Waste",
+      "guidance": "Expired or unused medicines must be kept in original packaging and handed over during BBMP domestic hazardous waste collection.",
+      "edge_cases": "Never flush antibiotics, syrups, or pills down toilets or sinks, as they contaminate Bengaluru's groundwater and water bodies. Strip blister packaging if completely empty into dry waste.",
+      "source": "Solid Waste Management Rules 2016 (NEEDS VERIFICATION for BBMP pharmacy return program)"
+    },
+    "syringe or needle": {
+      "bin": "Hazardous",
+      "bengaluru_category": "Domestic Hazardous / Sanitary Waste",
+      "guidance": "Sharps are an extreme biohazard and injury risk for waste workers. Place inside a puncture-proof plastic bottle or tin, cap it tightly, and label clearly 'SHARPS'.",
+      "edge_cases": "Never discard loose needles or recap used needles. Hand over separately to local clinics, pharmacies, or sanitary waste collectors.",
+      "source": "Biomedical Waste Management Rules 2016"
+    },
+    "medical waste": {
+      "bin": "Hazardous",
+      "bengaluru_category": "Sanitary / Domestic Hazardous Waste",
+      "guidance": "Bandages, cotton swabs, and dialysis kits must be wrapped securely in newspaper marked with a red cross (X) and handed to pourakarmikas as sanitary waste.",
+      "edge_cases": "Contaminated sharps must always follow the puncture-proof container protocol.",
+      "source": "BBMP 2-Bin 1-Bag Protocol (Red Bag / Red Cross Newspaper)"
+    },
+    "biohazard waste": {
+      "bin": "Hazardous",
+      "bengaluru_category": "Domestic Hazardous Waste",
+      "guidance": "Double wrap in leak-proof bags, mark with biohazard symbol or red cross, and hand over during domestic hazardous collection.",
+      "edge_cases": "Institutional biohazard waste requires licensed Common Bio-medical Waste Treatment Facility (CBWTF) pickup.",
+      "source": "Biomedical Waste Management Rules 2016"
+    },
+    "chemical container": {
+      "bin": "Hazardous",
+      "bengaluru_category": "Domestic Hazardous Waste",
+      "guidance": "Bottles of bleach, drain cleaners, and laboratory chemicals must be tightly sealed and disposed of as Domestic Hazardous Waste.",
+      "edge_cases": "Do not rinse corrosive chemicals into domestic sewage if they produce toxic fumes. Never mix leftover chemicals.",
+      "source": "Solid Waste Management Rules 2016"
+    },
+    "aerosol can": {
+      "bin": "Hazardous",
+      "bengaluru_category": "Domestic Hazardous Waste",
+      "guidance": "Pressurized cans can explode in compactor trucks or cause fires. Dispose with Domestic Hazardous Waste.",
+      "edge_cases": "Never puncture or incinerate aerosol cans. Ensure completely depressurized if taking to metal scrap.",
+      "source": "BBMP Domestic Hazardous Waste Guidelines (NEEDS VERIFICATION)"
+    },
+    "paint can": {
+      "bin": "Hazardous",
+      "bengaluru_category": "Domestic Hazardous Waste",
+      "guidance": "Paints, varnishes, and thinners contain toxic volatile compounds and heavy metals. Hand over on hazardous collection days.",
+      "edge_cases": "Allow small residual paint quantities to dry completely into solid form before handing over; never pour liquid paint into drains or soil.",
+      "source": "KSPCB Hazardous Waste Guidelines (NEEDS VERIFICATION)"
+    },
+    "pesticide or poison": {
+      "bin": "Hazardous",
+      "bengaluru_category": "Domestic Hazardous Waste",
+      "guidance": "Insecticides, rat poisons, and garden pesticides are high-hazard toxic chemicals. Keep in original labeled container and hand to hazardous waste handlers.",
+      "edge_cases": "Triple rinse empty pesticide bottles only if manufacturer instructions state so, and take empty containers to hazardous collection centres.",
+      "source": "Insecticides Act / KSPCB Hazardous Waste Guidelines (NEEDS VERIFICATION)"
+    },
+    "other waste": {
+      "bin": "Other",
+      "bengaluru_category": "Dry Waste / Needs Inspection",
+      "guidance": "If unsure, inspect the product material codes. Visit your ward's Dry Waste Collection Centre (DWCC) for advice.",
+      "edge_cases": "Do not guess. Mixed composite materials (e.g., footwear, thermocol, mirrors) often require specialized reject waste routing.",
+      "source": "BBMP Solid Waste Management Bye-laws 2020"
+    }
+  }
+}
+

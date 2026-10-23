@@ -1,5 +1,6 @@
 import sqlite3
 import threading
+from datetime import datetime
 
 DB_NAME = "recycling.db"
 
@@ -48,6 +49,25 @@ def create_data_base():
     connection.execute(
         "CREATE INDEX IF NOT EXISTS idx_events_user ON recycling_events(user_id)"
     )
+
+    # Human-AI corrections table: tracks when user corrects AI suggestions
+    connection.execute("""
+        CREATE TABLE IF NOT EXISTS ai_corrections (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            item_name TEXT,
+            suggested_label TEXT NOT NULL,
+            chosen_label TEXT NOT NULL,
+            suggested_bin TEXT NOT NULL,
+            chosen_bin TEXT NOT NULL,
+            was_corrected INTEGER NOT NULL,
+            timestamp TEXT NOT NULL
+        )
+    """)
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_corr_user ON ai_corrections(user_id)"
+    )
+
     connection.commit()
     connection.close()
 
@@ -104,6 +124,50 @@ def clear_events():
     connection.close()
 
 
+# ---------- AI prediction corrections ----------
+def log_correction(item_name, suggested_label, chosen_label, suggested_bin, chosen_bin):
+    """Log whether the user accepted or corrected the AI recommendation."""
+    connection = sqlite3.connect(DB_NAME)
+    was_corrected = 1 if (
+        str(suggested_label).strip().lower() != str(chosen_label).strip().lower()
+        or str(suggested_bin).strip().lower() != str(chosen_bin).strip().lower()
+    ) else 0
+    now = datetime.now().isoformat(timespec="seconds")
+    connection.execute(
+        """
+        INSERT INTO ai_corrections
+        (user_id, item_name, suggested_label, chosen_label, suggested_bin, chosen_bin, was_corrected, timestamp)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (_uid(), item_name, suggested_label, chosen_label, suggested_bin, chosen_bin, was_corrected, now)
+    )
+    connection.commit()
+    connection.close()
+
+
+def get_correction_stats():
+    """Return counts and percentage of human corrections vs AI suggestions."""
+    connection = sqlite3.connect(DB_NAME)
+    row = connection.execute(
+        """
+        SELECT COUNT(*) AS total, COALESCE(SUM(was_corrected), 0) AS corrections
+        FROM ai_corrections
+        WHERE user_id = ?
+        """,
+        (_uid(),)
+    ).fetchone()
+    connection.close()
+    total = row[0] if row else 0
+    corrections = row[1] if row else 0
+    rate = (corrections / total * 100.0) if total > 0 else 0.0
+    return {
+        "total": total,
+        "corrections": corrections,
+        "accepted": total - corrections,
+        "correction_rate": rate,
+    }
+
+
 # ---------- one-time adoption of pre-login records ----------
 def count_legacy_events():
     connection = sqlite3.connect(DB_NAME)
@@ -123,3 +187,4 @@ def claim_legacy_events(user_id):
     )
     connection.commit()
     connection.close()
+

@@ -18,7 +18,8 @@ import auth
 import data_base
 import rewa_logic
 import rewards as rewards_module
-from data_base import create_data_base, get_events, get_bin_totals
+from data_base import create_data_base, get_events, get_bin_totals, log_correction, get_correction_stats
+from bin_rules import CANDIDATE_LABELS, CANONICAL_BINS, resolve_bin, get_bengaluru_rule, get_bengaluru_meta
 from digital_twin import create_bins, record_item, empty_bin, get_bin_for_item
 from rewabuddy_advisor import generate_recycling_advice
 from rewards import (
@@ -104,35 +105,8 @@ def show_error_details(error):
     if DEBUG:
         st.caption(f"Technical details: {error}")
 
-# ---------- WASTE LABELS ----------
-# Labels the AI model chooses from. Hazardous items have several labels so
-# they are no longer swallowed by "other waste".
-CANDIDATE_LABELS = [
-    "cardboard box",
-    "paper sheet",
-    "newspaper",
-    "plastic bottle",
-    "plastic bag",
-    "plastic wrapper",
-    "metal can",
-    "glass bottle",
-    "glass jar",
-    "food waste",
-    "fruit peel",
-    # --- hazardous / medical ---
-    "battery",
-    "light bulb",
-    "medicine",
-    "syringe or needle",
-    "medical waste",
-    "biohazard waste",
-    "chemical container",
-    "aerosol can",
-    "paint can",
-    "pesticide or poison",
-    # --- catch-all ---
-    "other waste",
-]
+# ---------- WASTE LABELS & SINGLE SOURCE OF TRUTH ----------
+# CANDIDATE_LABELS and resolve_bin are imported from bin_rules.py
 
 # Any label containing one of these words is treated as hazardous.
 # (Labels are compared in lowercase with underscores instead of spaces.)
@@ -164,13 +138,6 @@ def normalize_label(label):
 def is_hazardous_label(label):
     label = normalize_label(label)
     return any(word in label for word in HAZARDOUS_KEYWORDS)
-
-
-def resolve_bin(label):
-    """Hazardous items go to the Hazardous bin; otherwise use the original mapping."""
-    if is_hazardous_label(label):
-        return "Hazardous"
-    return get_bin_for_item(label)
 
 
 # ---------- BANNER IMAGE (OPTIONAL) ----------
@@ -345,6 +312,9 @@ if "uploader_key" not in st.session_state:
 
 if "camera_key" not in st.session_state:
     st.session_state.camera_key = 0
+
+if "sample_shots" not in st.session_state:
+    st.session_state.sample_shots = []
 
 def rebuild_bins_from_database():
     """Create fresh virtual bins and fill them from the saved event log.
@@ -2171,8 +2141,9 @@ NAV_HTML = (
     '<div class="topnav" role="navigation" aria-label="Page sections">'
     '<a class="brand" href="#top"><span class="ic">♻️</span><span class="tx">ReWA.AI</span></a>'
     '<a href="#upload"><span class="ic">📷</span><span class="tx">Classify</span></a>'
-    '<a href="#rewards"><span class="ic">🏆</span><span class="tx">Rewards</span></a>'
     '<a href="#station"><span class="ic">♻️</span><span class="tx">Station</span></a>'
+    '<a href="#performance"><span class="ic">📈</span><span class="tx">Eval</span></a>'
+    '<a href="#rewards"><span class="ic">🏆</span><span class="tx">Rewards</span></a>'
     '<a href="#analytics"><span class="ic">📊</span><span class="tx">Analytics</span></a>'
     '<a href="#bins"><span class="ic">🏭</span><span class="tx">Bins</span></a>'
     '</div>'
@@ -2569,6 +2540,16 @@ def collect_images():
             logger.warning("Unexpected camera error for %s: %s", shot["name"], error)
             problems.append((shot["name"], "The photo could not be read."))
 
+    # 3) Sample demo photos
+    for sample in st.session_state.sample_shots:
+        try:
+            images.append({
+                "name": sample["name"],
+                "image": sample["image"],
+            })
+        except Exception as error:
+            problems.append((sample["name"], "The sample photo could not be read."))
+
     return images, problems
 
 
@@ -2912,12 +2893,12 @@ def suggested_category(item, bin_names):
 
 # ---------- ONE ANALYSED IMAGE (result card) ----------
 def render_result(item, number, total, bin_status):
-    """Show the full AI analysis, ReWA Buddy and action plan for one image."""
+    """Show the full AI analysis, ReWA Buddy, Bengaluru rules and action plan for one image."""
     best_label = item["best_label"]
     best_score = item["best_score"]
     uid = item["uid"]
 
-    title = f"{number}. {item['name']} → {best_label.title()} ({best_score:.0%})"
+    title = f"{number}. {item['name']} → {best_label.title()} ({best_score:.0%} similarity score)"
 
     with st.expander(title, expanded=(total == 1 or number == 1)):
         # Wide layout: photo on the left, verdict on the right
@@ -2933,13 +2914,13 @@ def render_result(item, number, total, bin_status):
         with verdict_col:
             if best_score < 0.55:
                 st.warning(
-                    "The model score is low. Try a clearer photo "
+                    "The similarity score is low. Try a clearer photo "
                     "or verify the item manually."
                 )
             else:
                 st.success(
                     f"Best guess: {best_label.title()} "
-                    f"({best_score:.1%} model score)"
+                    f"({best_score:.1%} similarity score)"
                 )
 
             if is_hazardous_label(best_label):
@@ -2951,7 +2932,7 @@ def render_result(item, number, total, bin_status):
             st.markdown(
                 f'<div class="result">'
                 f'<h3>🏷️ {best_label.title()}</h3>'
-                f'<p>Model score: {best_score:.1%}</p>'
+                f'<p>Similarity score: {best_score:.1%}</p>'
                 f'</div>',
                 unsafe_allow_html=True
             )
@@ -2960,8 +2941,22 @@ def render_result(item, number, total, bin_status):
             for other in item["results"][1:]:
                 st.write(
                     f"• {other['label'].title()} — "
-                    f"{other['score']:.1%}"
+                    f"{other['score']:.1%} similarity score"
                 )
+
+        # ---- Bengaluru Local Waste Guidance ----
+        b_rule = get_bengaluru_rule(best_label)
+        with st.container(border=True):
+            st.markdown("### 📍 Bengaluru Local Guidance (BBMP 2-Bin 1-Bag)")
+            b_col1, b_col2 = st.columns([1, 2])
+            with b_col1:
+                st.markdown(f"**Bengaluru Category:** `{b_rule.get('bengaluru_category', 'Dry Waste')}`")
+                st.markdown(f"**Recommended Bin:** `{b_rule.get('bin', 'Dry Waste')}`")
+            with b_col2:
+                st.markdown(f"**Guidance:** {b_rule.get('guidance', '')}")
+                st.markdown(f"**⚠️ Edge Cases & Notes:** {b_rule.get('edge_cases', '')}")
+                st.caption(f"📚 **Source:** {b_rule.get('source', 'NEEDS VERIFICATION')}")
+            st.caption("ℹ️ *Note: Segregation rules and DWCC collection schedules can vary across wards/apartments. Confirm with your local RWA or ward BBMP office.*")
 
         # ---- ReWA AI Buddy ----
         st.markdown(
@@ -3157,6 +3152,11 @@ if show_intro:
         THEME_CSS + "\n" + build_intro_html(),
         unsafe_allow_html=True
     )
+    col_skip1, col_skip2 = st.columns([5, 1])
+    with col_skip2:
+        if st.button("⏩ Skip Intro", key="skip_intro_btn", help="Skip the opening animation"):
+            st.session_state.intro_played = True
+            st.rerun()
 
 # ---------- LOGIN / ACCOUNT PANEL (top of the page) ----------
 # A normal block in the page flow (not pinned, not a pop-up), so nothing can
@@ -3195,19 +3195,10 @@ if is_guest:
         "streaks."
     )
 elif current_user["provider"] == "public":
-    # No login needed: everything works and is saved on the shared visitor
-    # account. Records saved before sign-in existed are attached to it
-    # automatically, so your old history shows up again.
-    try:
-        if data_base.count_legacy_events() or rewards_module.count_legacy_rewards():
-            data_base.claim_legacy_events(current_user["id"])
-            rewards_module.claim_legacy_rewards(current_user["id"])
-            rebuild_bins_from_database()
-    except Exception as error:
-        logger.warning("Could not attach older records: %s", error)
-    st.caption(
-        "✅ Everything works without logging in. Your items, Eco Points and "
-        "history are saved. (Logging in is optional.)"
+    st.info(
+        "ℹ️ **Anonymous session active**: Your items and points are kept private to this session. "
+        "Anonymous progress is kept only for this session / may reset if the app restarts or redeploys. "
+        "Log in (panel at top) to persist across devices and server restarts."
     )
 else:
     # Records saved before sign-in existed belong to no one yet; let the
@@ -3225,194 +3216,15 @@ else:
             rebuild_bins_from_database()
             st.rerun()
 
-# ---------- WHAT IS REWA? (problem -> solution -> action) ----------
-st.markdown(
-    '<div class="explain">'
-    '<div class="explain-card"><div class="ex-label">The problem</div>'
-    '<div class="ex-title">Which bin is this?</div>'
-    '<p>Many people are unsure where an item belongs, and a wrong guess can '
-    'contaminate recycling or put hazardous waste where it should not be.</p>'
-    '</div>'
-    '<div class="explain-card"><div class="ex-label">The solution</div>'
-    '<div class="ex-title">Snap, check, sort</div>'
-    '<p>Take a photo. ReWA suggests what the item is, which bin fits, and '
-    'how to prepare and reuse it. You always confirm the category.</p>'
-    '</div>'
-    '<div class="explain-card"><div class="ex-label">Try it now</div>'
-    '<div class="ex-title">Three quick steps</div>'
-    '<p>1. Add a photo below. 2. Check the suggestion. 3. Add it to your '
-    'virtual bin and earn Eco Points. <a href="#upload">Start sorting →</a></p>'
-    '</div>'
-    '</div>'
-    '<p class="explain-note">AI suggestions can be wrong: always check your '
-    'local recycling rules. Bin levels are simulated (no sensors) and Eco '
-    'Points are virtual.</p>',
-    unsafe_allow_html=True
-)
-
-# ---------- ECO REWARDS ----------
-# Retry any Eco Points that could not be saved earlier. This is safe: the
-# database refuses to reward the same event twice.
-if st.session_state.pending_rewards:
-    rewa_logic.retry_pending_rewards(
-        st.session_state.pending_rewards, _award_in_database
-    )
-
-rewards = get_summary()
-
-section_head("Your impact", "🏆 Your Eco Rewards", anchor="rewards")
-
-r1, r2, r3, r4 = st.columns(4)
-
-with r1:
-    st.markdown(
-        f'<div class="reward-card"><div class="big">🌟 {rewards["total_points"]}</div>'
-        f'<div class="small">Eco Points</div></div>',
-        unsafe_allow_html=True
-    )
-
-with r2:
-    day_word = "day" if rewards["current_streak"] == 1 else "days"
-    st.markdown(
-        f'<div class="reward-card"><div class="big">🔥 {rewards["current_streak"]} {day_word}</div>'
-        f'<div class="small">Current streak</div></div>',
-        unsafe_allow_html=True
-    )
-
-with r3:
-    st.markdown(
-        f'<div class="reward-card"><div class="big">🏅 {rewards["longest_streak"]}</div>'
-        f'<div class="small">Longest streak (days)</div></div>',
-        unsafe_allow_html=True
-    )
-
-with r4:
-    st.markdown(
-        f'<div class="reward-card"><div class="big">📅 {rewards["active_days"]}</div>'
-        f'<div class="small">Active recycling days</div></div>',
-        unsafe_allow_html=True
-    )
-
-st.write("")
-
-goal_percent = min(int(rewards["today_events"] / DAILY_GOAL * 100), 100)
-st.markdown(
-    progress_bar(
-        goal_percent,
-        f"Today's goal: {rewards['today_events']} of {DAILY_GOAL} items "
-        f"recycled • {rewards['today_points']} points earned today"
-    ),
-    unsafe_allow_html=True
-)
-
-if rewards["today_events"] == 0 and rewards["current_streak"] > 0:
-    st.caption(
-        f"Recycle an item today to keep your {rewards['current_streak']}-day "
-        f"streak alive!"
-    )
-elif rewards["today_events"] >= DAILY_GOAL:
-    st.caption("🎉 Daily goal complete — great work!")
-
-st.caption(
-    f"Each recorded item earns {POINTS_PER_EVENT} virtual Eco Points. They "
-    "have no cash value and cannot be redeemed for real-world rewards. "
-    "Recording an item in this app does not prove it was physically recycled."
-)
-
-# Explain (instead of hiding) any mismatch between items and points
-recorded_total = sum(
-    data["item_count"] for data in st.session_state.digital_twin_bins.values()
-)
-points_gap = rewa_logic.reward_gap(recorded_total, rewards["total_events"])
-
-if st.session_state.pending_rewards:
-    st.warning(
-        f"{len(st.session_state.pending_rewards)} recorded item(s) are "
-        "waiting for their Eco Points to be saved. ReWA retries automatically."
-    )
-elif points_gap:
-    st.info(
-        f"ℹ️ {points_gap} item(s) in your bins have no Eco Points. This "
-        "happens for items recorded before rewards existed, or after "
-        "“Reset Eco Points” (which clears points but keeps your item "
-        "history). Points are never added retroactively, so nothing is "
-        "counted twice."
-    )
-
-render_eco_extras(rewards)
-
-# ---- Reset Eco Points (two-step confirmation) ----
-has_rewards = (
-    rewards["total_points"] > 0
-    or rewards["total_events"] > 0
-    or rewards["active_days"] > 0
-)
-
-if not st.session_state.confirm_reset_rewards:
-    # Step 1: the normal button
-    reset_btn_col, _reset_space = st.columns([1, 3])
-    with reset_btn_col:
-        if st.button(
-            "🗑️ Reset Eco Points",
-            use_container_width=True,
-            disabled=not has_rewards,
-            key="reset_rewards_start",
-            help="Delete all Eco Points and streaks (asks for confirmation first)."
-        ):
-            st.session_state.confirm_reset_rewards = True
-            st.rerun()
-else:
-    # Step 2: ask once more before anything is deleted
-    st.markdown(
-        '<div class="reset-panel">'
-        '<div class="reset-title">⚠️ Are you absolutely sure?</div>'
-        '<p class="reset-text">This will permanently delete '
-        f'<b>{rewards["total_points"]} Eco Points</b>, your streaks and your '
-        'rewarded-event history. This cannot be undone.</p>'
-        '</div>',
-        unsafe_allow_html=True
-    )
-
-    confirm_col, cancel_col, _confirm_space = st.columns([1.3, 1, 2])
-
-    with confirm_col:
-        if st.button(
-            "✅ Yes, delete my Eco Points",
-            type="primary",
-            use_container_width=True,
-            key="reset_rewards_confirm"
-        ):
-            try:
-                clear_all_rewards()
-                st.session_state.confirm_reset_rewards = False
-                st.session_state.flash = (
-                    "success",
-                    "🧹 All Eco Points and streaks have been reset."
-                )
-            except Exception as error:
-                st.session_state.confirm_reset_rewards = False
-                st.session_state.flash = (
-                    "warning",
-                    f"Could not reset Eco Points: {error}"
-                )
-            st.rerun()
-
-    with cancel_col:
-        if st.button(
-            "↩️ Cancel",
-            use_container_width=True,
-            key="reset_rewards_cancel"
-        ):
-            st.session_state.confirm_reset_rewards = False
-            st.rerun()
-
+# =====================================================================
+# CORE FLOW (TOP OF PAGE): 1. ADD PHOTO -> 2. AI ANALYSIS -> 3. SORT
+# =====================================================================
 st.markdown("---")
-
 section_head("Get started", "Welcome to a greener future!", anchor="upload", tag="h1")
 st.write(
-    "Upload photos or take live pictures of your items and let AI suggest "
-    "what they might be. You'll also receive practical recycling guidance "
-    "for every item."
+    "Upload photos, capture live with your camera, or try a sample demo photo. "
+    "ReWA provides AI similarity classification, practical recycling guidance, "
+    "and official Bengaluru segregation rules for every item."
 )
 
 # Bins are needed by the ReWA AI Buddy inside the analysis cards
@@ -3426,11 +3238,11 @@ with upload_row:
     with st.container(border=True):
         st.subheader("📷 1. Add your images")
         st.write(
-            "Upload one or many photos, or snap them live with your camera."
+            "Upload one or many photos, snap them live with your camera, or try a sample photo."
         )
 
-        tab_upload, tab_camera = st.tabs(
-            ["📁 Upload files", "📸 Take live photo"]
+        tab_upload, tab_camera, tab_sample = st.tabs(
+            ["📁 Upload files", "📸 Take live photo", "🧪 Try a sample photo"]
         )
 
         # ---- Tab 1: upload one or many files ----
@@ -3474,7 +3286,6 @@ with upload_row:
                                     f"{len(st.session_state.camera_shots) + 1}",
                             "data": photo_bytes,
                         })
-                        # Fresh camera widget, ready for the next picture
                         st.session_state.camera_key += 1
                         st.session_state.flash = (
                             "success",
@@ -3498,6 +3309,48 @@ with upload_row:
                     st.session_state.camera_shots = []
                     st.session_state.camera_key += 1
                     st.rerun()
+
+        # ---- Tab 3: sample photos ----
+        with tab_sample:
+            st.caption("Test the classifier with demo photos without uploading your own.")
+            sample_dir = Path("sample_images")
+            if not sample_dir.exists():
+                sample_dir = Path(".vscode/sample_images")
+            sample_files = []
+            if sample_dir.exists():
+                sample_files = sorted([
+                    f for f in sample_dir.iterdir()
+                    if f.is_file() and f.suffix.lower() in [".jpg", ".jpeg", ".png", ".webp"]
+                ])
+            if sample_files:
+                sample_options = [f.name for f in sample_files]
+                chosen_sample = st.selectbox(
+                    "Choose a sample photo to test:",
+                    sample_options,
+                    key="sample_select"
+                )
+                if st.button("➕ Load this sample photo", use_container_width=True, key="add_sample_btn"):
+                    matched_file = [f for f in sample_files if f.name == chosen_sample][0]
+                    try:
+                        with Image.open(matched_file) as raw:
+                            img_copy = raw.convert("RGB")
+                        st.session_state.sample_shots = [{
+                            "name": f"Sample: {chosen_sample}",
+                            "image": img_copy,
+                        }]
+                        st.session_state.flash = (
+                            "success",
+                            f"Loaded sample image '{chosen_sample}'! Click 'Classify' below to test."
+                        )
+                        st.rerun()
+                    except Exception as error:
+                        st.error(f"Could not load sample photo: {error}")
+            else:
+                st.info(
+                    "ℹ️ No sample images found in `sample_images/`. "
+                    "To enable one-click demo testing, place test waste photos "
+                    "(e.g. `plastic_bottle.jpg`, `cardboard_box.jpg`) into the `sample_images/` folder."
+                )
 
         # ---- Everything collected so far ----
         images, problems = collect_images()
@@ -3541,6 +3394,7 @@ with upload_row:
                 disabled=(len(images) == 0 and not st.session_state.batch)
             ):
                 st.session_state.camera_shots = []
+                st.session_state.sample_shots = []
                 st.session_state.batch = []
                 st.session_state.buddy_advice = {}
                 st.session_state.uploader_key += 1
@@ -3557,7 +3411,7 @@ with result_row:
         if classify_clicked and images:
             try:
                 with st.spinner(
-                    "Loading the AI model (the first run can take a minute)..."
+                    "Loading AI model, first run may take a minute..."
                 ):
                     classifier = load_classifier()
                 new_batch = []
@@ -3571,17 +3425,12 @@ with result_row:
                         )[:3]
 
                         new_batch.append({
-                            # Unique key for this classification; the database
-                            # uses it to make sure the same event can never
-                            # be rewarded twice.
                             "uid": uuid.uuid4().hex,
                             "name": item["name"],
                             "image": item["image"],
                             "results": predictions,
                             "best_label": predictions[0]["label"],
                             "best_score": predictions[0]["score"],
-                            # Identifies the picture itself, so the same photo
-                            # cannot be recorded (and rewarded) twice.
                             "fingerprint": hashlib.md5(
                                 item["image"].tobytes()
                             ).hexdigest(),
@@ -3603,15 +3452,13 @@ with result_row:
                     )
 
                 progress.empty()
-
                 st.session_state.batch = new_batch
-                # New items mean the old ReWA answers no longer apply
                 st.session_state.buddy_advice = {}
 
             except Exception as error:
                 st.error(
                     "The AI model could not be loaded. It needs an internet "
-                    "connection the first time. Please try again."
+                    "connection on the first run to download the CLIP model. Please try again."
                 )
                 show_error_details(error)
 
@@ -3662,7 +3509,7 @@ if batch:
     if len(batch) > 1:
         if st.button(
             f"➕ Add all {len(pending)} pending items "
-            f"(+{POINTS_PER_EVENT} Eco Points each)",
+            f"(+{POINTS_PER_EVENT} Virtual Eco Points each)",
             disabled=len(pending) == 0,
             use_container_width=True,
             key="add_all_items"
@@ -3672,12 +3519,22 @@ if batch:
             problems_found = []
 
             for item in pending:
-                # Use the bin currently shown in each item's dropdown
-                chosen = st.session_state.get(
+                chosen_label = st.session_state.get(
+                    f"confirmed_label_{item['uid']}", item["best_label"]
+                )
+                chosen_bin = st.session_state.get(
                     f"confirmed_category_{item['uid']}",
                     suggested_category(item, bin_names)
                 )
-                status, detail = record_and_reward(item, chosen)
+                # Log human verification/correction
+                log_correction(
+                    item["name"],
+                    item["best_label"],
+                    chosen_label,
+                    resolve_bin(item["best_label"]) or "Unknown",
+                    chosen_bin
+                )
+                status, detail = record_and_reward(item, chosen_bin)
 
                 if status == "ok":
                     ok_count += 1
@@ -3693,7 +3550,7 @@ if batch:
                     )
                 else:
                     _, message = status_message(
-                        status, detail, item["best_label"], chosen
+                        status, detail, item["best_label"], chosen_bin
                     )
                     problems_found.append(f"{item['best_label']}: {message}")
 
@@ -3707,14 +3564,14 @@ if batch:
                 st.session_state.flash = (
                     "success",
                     f"✅ {ok_count} item(s) added to your bins for this "
-                    "visit. Log in (Log in panel at the top) to save items and earn "
+                    "visit. Log in (panel at top) to save items and earn "
                     "Eco Points."
                 )
             else:
                 st.session_state.flash = (
                     "success",
                     f"🌟 {ok_count} item(s) recorded! "
-                    f"+{points_count * POINTS_PER_EVENT} Eco Points."
+                    f"+{points_count * POINTS_PER_EVENT} Virtual Eco Points."
                 )
             st.rerun()
 
@@ -3731,24 +3588,32 @@ if batch:
                 st.image(item["image"], width=90)
 
             with info_col:
-                st.write(f"**{number}. {item['name']}** — detected: **{best_label}**")
+                st.write(f"**{number}. {item['name']}** — AI suggested: **{best_label}**")
 
-                # Pre-select the bin that matches the detected item
-                # (hazardous items always go to the Hazardous bin)
-                suggested = resolve_bin(best_label)
+                # Allow user to easily confirm or correct the item label
+                default_lbl_idx = CANDIDATE_LABELS.index(best_label) if best_label in CANDIDATE_LABELS else 0
+                confirmed_label = st.selectbox(
+                    "Confirm or correct detected item label",
+                    CANDIDATE_LABELS,
+                    index=default_lbl_idx,
+                    key=f"confirmed_label_{uid}",
+                    disabled=already
+                )
+
+                # Pre-select bin matching the confirmed label
+                suggested = resolve_bin(confirmed_label)
                 if rewa_logic.needs_manual_category(
                     item["best_score"], suggested
                 ):
                     st.warning(
-                        "⚠️ The AI is not sure about this item. Please check "
-                        "the category below before adding it."
+                        "⚠️ AI similarity score is low. Please confirm the waste bin below before adding."
                     )
                 default_index = (
                     bin_names.index(suggested) if suggested in bin_names else 0
                 )
 
                 category = st.selectbox(
-                    "Confirm the waste category",
+                    "Confirm the waste bin",
                     bin_names,
                     index=default_index,
                     key=f"confirmed_category_{uid}",
@@ -3758,19 +3623,238 @@ if batch:
                 if already:
                     recorded_bin = st.session_state.recorded_bins.get(uid, category)
                     st.success(
-                        f"✅ Already recorded in the {recorded_bin} recycling bin."
+                        f"✅ Already recorded in the {recorded_bin} bin."
                     )
                 elif st.button(
-                    f"Add item to recycling bin (+{POINTS_PER_EVENT} Eco Points)",
+                    f"Add item to bin (+{POINTS_PER_EVENT} Virtual Eco Points)",
                     key=f"add_item_{uid}"
                 ):
+                    log_correction(
+                        item["name"],
+                        item["best_label"],
+                        confirmed_label,
+                        resolve_bin(item["best_label"]) or "Unknown",
+                        category
+                    )
                     status, detail = record_and_reward(item, category)
                     st.session_state.flash = status_message(
-                        status, detail, best_label, category
+                        status, detail, confirmed_label, category
                     )
                     st.rerun()
 else:
-    st.info("Add photos (upload or live camera) and classify them to get started.")
+    st.info("Add photos (upload, live camera, or sample photo) and classify them to get started.")
+
+
+# =====================================================================
+# SECONDARY SECTIONS (BELOW CORE FLOW)
+# =====================================================================
+
+# ---------- WHAT IS REWA? (problem -> solution -> action) ----------
+st.markdown("---")
+st.markdown(
+    '<div class="explain">'
+    '<div class="explain-card"><div class="ex-label">The problem</div>'
+    '<div class="ex-title">Which bin is this?</div>'
+    '<p>Many people are unsure where an item belongs, and a wrong guess can '
+    'contaminate recycling or put hazardous waste where it should not be.</p>'
+    '</div>'
+    '<div class="explain-card"><div class="ex-label">The solution</div>'
+    '<div class="ex-title">Snap, check, sort</div>'
+    '<p>Take a photo. ReWA suggests what the item is, which bin fits, and '
+    'how to prepare and reuse it. You always confirm the category.</p>'
+    '</div>'
+    '<div class="explain-card"><div class="ex-label">Try it now</div>'
+    '<div class="ex-title">Three quick steps</div>'
+    '<p>1. Add a photo above. 2. Check the suggestion & Bengaluru rules. 3. Confirm and sort into your '
+    'virtual bin to earn Virtual Eco Points.</p>'
+    '</div>'
+    '</div>'
+    '<p class="explain-note">AI similarity scores can be wrong: always check your '
+    'local recycling rules. Bin levels are simulated (no hardware sensors) and Eco '
+    'Points are virtual.</p>',
+    unsafe_allow_html=True
+)
+
+# ---------- MODEL PERFORMANCE BENCHMARK (Task 2) ----------
+st.markdown("---")
+section_head("Benchmarking", "📊 AI Model Performance", anchor="performance")
+eval_report_file = Path("eval_report.json")
+if not eval_report_file.exists():
+    eval_report_file = Path(".vscode/eval_report.json")
+
+if eval_report_file.exists():
+    try:
+        with open(eval_report_file, "r", encoding="utf-8") as ef:
+            eval_data = json.load(ef)
+        with st.container(border=True):
+            st.markdown("#### Real Evaluation Benchmark (from evaluate_model.py)")
+            st.caption(f"Evaluated on {eval_data.get('total_images_evaluated', 0)} real images on {eval_data.get('timestamp', '')[:10]}")
+            e1, e2, e3 = st.columns(3)
+            e1.metric("Top-1 Accuracy", f"{eval_data.get('overall_top1_accuracy', 0):.1%}")
+            e2.metric("Top-3 Accuracy", f"{eval_data.get('overall_top3_accuracy', 0):.1%}")
+            e3.metric("Evaluated Images", eval_data.get("total_images_evaluated", 0))
+            if eval_data.get("most_common_mistakes"):
+                st.markdown("**Common Misclassifications:**")
+                for m in eval_data["most_common_mistakes"][:5]:
+                    st.write(f"• True: *{m['true_label']}* → Predicted: *{m['predicted_label']}* ({m['occurrences']}x)")
+    except Exception as err:
+        st.info("ℹ️ **Model Performance:** Not evaluated yet on labeled dataset. Run `python evaluate_model.py` with labeled photos in `eval_data/` to test accuracy.")
+else:
+    st.info("ℹ️ **Model Performance:** Not evaluated yet on labeled dataset. Run `python evaluate_model.py` with labeled test photos in `eval_data/` to generate a real evaluation report.")
+
+
+# ---------- ECO REWARDS ----------
+if st.session_state.pending_rewards:
+    rewa_logic.retry_pending_rewards(
+        st.session_state.pending_rewards, _award_in_database
+    )
+
+rewards = get_summary()
+
+st.markdown("---")
+section_head("Your impact", "🏆 Your Virtual Eco Rewards", anchor="rewards")
+
+r1, r2, r3, r4 = st.columns(4)
+
+with r1:
+    st.markdown(
+        f'<div class="reward-card"><div class="big">🌟 {rewards["total_points"]}</div>'
+        f'<div class="small">Virtual Eco Points</div></div>',
+        unsafe_allow_html=True
+    )
+
+with r2:
+    day_word = "day" if rewards["current_streak"] == 1 else "days"
+    st.markdown(
+        f'<div class="reward-card"><div class="big">🔥 {rewards["current_streak"]} {day_word}</div>'
+        f'<div class="small">Current streak</div></div>',
+        unsafe_allow_html=True
+    )
+
+with r3:
+    st.markdown(
+        f'<div class="reward-card"><div class="big">🏅 {rewards["longest_streak"]}</div>'
+        f'<div class="small">Longest streak (days)</div></div>',
+        unsafe_allow_html=True
+    )
+
+with r4:
+    st.markdown(
+        f'<div class="reward-card"><div class="big">📅 {rewards["active_days"]}</div>'
+        f'<div class="small">Active recycling days</div></div>',
+        unsafe_allow_html=True
+    )
+
+st.write("")
+
+goal_percent = min(int(rewards["today_events"] / DAILY_GOAL * 100), 100)
+st.markdown(
+    progress_bar(
+        goal_percent,
+        f"Today's goal: {rewards['today_events']} of {DAILY_GOAL} items "
+        f"recycled • {rewards['today_points']} virtual points earned today"
+    ),
+    unsafe_allow_html=True
+)
+
+if rewards["today_events"] == 0 and rewards["current_streak"] > 0:
+    st.caption(
+        f"Recycle an item today to keep your {rewards['current_streak']}-day "
+        f"streak alive!"
+    )
+elif rewards["today_events"] >= DAILY_GOAL:
+    st.caption("🎉 Daily goal complete — great work!")
+
+st.caption(
+    f"Each recorded item earns {POINTS_PER_EVENT} virtual Eco Points. They "
+    "have no cash value and cannot be redeemed for real-world rewards. "
+    "Recording an item in this app does not prove it was physically recycled."
+)
+
+# Explain (instead of hiding) any mismatch between items and points
+recorded_total = sum(
+    data["item_count"] for data in st.session_state.digital_twin_bins.values()
+)
+points_gap = rewa_logic.reward_gap(recorded_total, rewards["total_events"])
+
+if st.session_state.pending_rewards:
+    st.warning(
+        f"{len(st.session_state.pending_rewards)} recorded item(s) are "
+        "waiting for their Eco Points to be saved. ReWA retries automatically."
+    )
+elif points_gap:
+    st.info(
+        f"ℹ️ {points_gap} item(s) in your bins have no Eco Points. This "
+        "happens for items recorded before rewards existed, or after "
+        "“Reset Eco Points” (which clears points but keeps your item "
+        "history). Points are never added retroactively, so nothing is "
+        "counted twice."
+    )
+
+render_eco_extras(rewards)
+
+# ---- Reset Eco Points (two-step confirmation) ----
+has_rewards = (
+    rewards["total_points"] > 0
+    or rewards["total_events"] > 0
+    or rewards["active_days"] > 0
+)
+
+if not st.session_state.confirm_reset_rewards:
+    reset_btn_col, _reset_space = st.columns([1, 3])
+    with reset_btn_col:
+        if st.button(
+            "🗑️ Reset Eco Points",
+            use_container_width=True,
+            disabled=not has_rewards,
+            key="reset_rewards_start",
+            help="Delete all Eco Points and streaks (asks for confirmation first)."
+        ):
+            st.session_state.confirm_reset_rewards = True
+            st.rerun()
+else:
+    st.markdown(
+        '<div class="reset-panel">'
+        '<div class="reset-title">⚠️ Are you absolutely sure?</div>'
+        '<p class="reset-text">This will permanently delete '
+        f'<b>{rewards["total_points"]} Virtual Eco Points</b>, your streaks and your '
+        'rewarded-event history. This cannot be undone.</p>'
+        '</div>',
+        unsafe_allow_html=True
+    )
+
+    confirm_col, cancel_col, _confirm_space = st.columns([1.3, 1, 2])
+
+    with confirm_col:
+        if st.button(
+            "✅ Yes, delete my Eco Points",
+            type="primary",
+            use_container_width=True,
+            key="reset_rewards_confirm"
+        ):
+            try:
+                clear_all_rewards()
+                st.session_state.confirm_reset_rewards = False
+                st.session_state.flash = (
+                    "success",
+                    "🧹 All Eco Points and streaks have been reset."
+                )
+            except Exception as error:
+                st.session_state.confirm_reset_rewards = False
+                st.session_state.flash = (
+                    "warning",
+                    f"Could not reset Eco Points: {error}"
+                )
+            st.rerun()
+
+    with cancel_col:
+        if st.button(
+            "↩️ Cancel",
+            use_container_width=True,
+            key="reset_rewards_cancel"
+        ):
+            st.session_state.confirm_reset_rewards = False
+            st.rerun()
 
 # ---------- RECYCLING ANALYTICS ----------
 st.markdown("---")
@@ -3811,7 +3895,18 @@ with col2:
     st.metric("Most recorded category", most_common)
 
 with col3:
-    st.metric("Average simulated capacity", f"{average_capacity:.1f}%")
+    st.metric("Average simulated capacity", f"{average_capacity:.1f}%", help="Simulated fill percentage across 6 virtual bins")
+
+# Verifiable Human-AI interaction measures (Task 2 & 6)
+corr_stats = data_base.get_correction_stats()
+st.subheader("🤖 AI Classification & Human Verification Measures")
+st.caption("Verifiable interaction measures tracked live from this session and database.")
+v1, v2, v3, v4 = st.columns(4)
+v1.metric("Items Classified (Session)", len(st.session_state.batch))
+v2.metric("Items Sorted (Session)", len(st.session_state.recorded_uids))
+v3.metric("Human Corrections Logged", corr_stats["corrections"])
+acc_rate = f"{100 - corr_stats['correction_rate']:.1f}%" if corr_stats["total"] > 0 else "N/A"
+v4.metric("AI Suggestion Acceptance", acc_rate)
 
 # 5. Compare recorded item counts and simulated capacities side by side
 chart_left, chart_right = st.columns(2)
@@ -3824,20 +3919,20 @@ with chart_left:
     )
 
 with chart_right:
-    st.subheader("Virtual Bin Capacity Comparison")
+    st.subheader("Virtual Bin Capacity Comparison (Simulated)")
     colorful_bar_chart(
         {name: data["capacity_percent"] for name, data in bins.items()},
         y_title="Simulated capacity (%)"
     )
 
 # 6. Rewards analytics (read from the database, so it survives restarts)
-st.subheader("🌟 Rewards Analytics")
+st.subheader("🌟 Virtual Rewards Analytics")
 
 # Re-read the summary so points recorded earlier in this run are included
 rewards = get_summary()
 
 s1, s2, s3, s4 = st.columns(4)
-s1.metric("Total Eco Points", rewards["total_points"])
+s1.metric("Total Virtual Eco Points", rewards["total_points"])
 s2.metric("Rewarded events", rewards["total_events"])
 s3.metric("Current streak", f"{rewards['current_streak']} days")
 s4.metric("Longest streak", f"{rewards['longest_streak']} days")
@@ -3888,6 +3983,30 @@ if events:
             f"♻️ {event['item_name']} — "
             f"{event['material']} — "
             f"{event['timestamp']}"
+        )
+
+    # Download history export (CSV & JSON)
+    df_events = pd.DataFrame(events)
+    df_export = df_events.drop(columns=["user_id"], errors="ignore") if not df_events.empty else df_events
+    csv_bytes = df_export.to_csv(index=False).encode("utf-8")
+    json_bytes = df_export.to_json(orient="records", indent=2).encode("utf-8")
+
+    dl_col1, dl_col2, _ = st.columns([1.2, 1.2, 2])
+    with dl_col1:
+        st.download_button(
+            label="📥 Download history (CSV)",
+            data=csv_bytes,
+            file_name="rewa_recycling_history.csv",
+            mime="text/csv",
+            key="dl_history_csv"
+        )
+    with dl_col2:
+        st.download_button(
+            label="📥 Download history (JSON)",
+            data=json_bytes,
+            file_name="rewa_recycling_history.json",
+            mime="application/json",
+            key="dl_history_json"
         )
 
     confirm_clear = st.checkbox(

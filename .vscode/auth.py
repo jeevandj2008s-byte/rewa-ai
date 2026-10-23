@@ -1,73 +1,74 @@
-"""auth.py - sign-in for ReWA.AI
+"""auth.py - Supabase Authentication & Session Identity for ReWA.AI
 
-Everyone can open the website. A visitor who has not logged in is a "guest"
-(they can try the classifier, but nothing is saved for them). A "Log in"
-panel sits at the top of the page; once logged in it turns into an account
-panel with a Sign out button.
+ReWA.AI supports two modes of access:
+1. Anonymous Visitors (Zero Configuration required):
+   - Visitors can use every feature (photo classification, bin sorting, Eco Points,
+     Bengaluru municipal guidance, and digital twin simulation).
+   - Each visitor receives an isolated per-session UUID stored in st.session_state.
+   - Visitors never share or overwrite each other's records.
+2. Authenticated Users (via Supabase Free Tier):
+   - Email + Password authentication (Sign Up, Log In, Log Out, Password Reset).
+   - Logged-in accounts use their Supabase User UUID as user_id across SQLite tables.
+   - Session data accumulated while anonymous is automatically merged upon sign-in.
 
-DESIGN NOTE (why it is built this way): the login panel is a normal block in
-the page flow (an expander). It is NOT pinned with position:fixed and it is
-NOT a pop-up dialog, because those two tricks were what could be covered,
-blocked or broken by the page's heavy CSS/animations. A normal block cannot
-be covered, so the button always responds.
-
-Ways to log in (each one is switched on by its own block in
-.streamlit/secrets.toml):
-  1. Google account  -> Streamlit's built-in OpenID Connect  [auth]
-  2. Phone number    -> SMS one-time code via Twilio Verify   [twilio]
-  3. Demo login      -> LOCAL TESTING ONLY, no verification   [dev]
-
-Usage in app.py:
-    import auth
-    current_user = auth.resolve_user()     # never blocks; guests are allowed
-    data_base.set_current_user(current_user["id"])
-    auth.account_corner(current_user)      # Log in panel / account panel
-
-current_user = {
-    "id": "google:123" | "phone:+9198..." | "demo:name" | "guest:abc...",
-    "name": ..., "provider": ..., "is_guest": True | False,
-}
-Use current_user["id"] as the key that separates each person's records.
-
-Requires: streamlit>=1.42, Authlib (for Google), requests (for Twilio).
+Security & Zero-Cost Constraints:
+- Uses ONLY the public 'anon' key from st.secrets (never the service_role key).
+- Passwords are never logged, stored in code, or passed in URLs.
+- Gracefully degrades to anonymous mode if Supabase credentials are not configured.
 """
+import logging
 import re
+import sqlite3
 import time
 import uuid
+from typing import Optional, Tuple
 
-import requests
 import streamlit as st
 
-# True  -> everyone can use EVERY feature without logging in. Visitors share
-#          one saved "public" account (items, Eco Points, streaks, history).
-# False -> visitors who are not logged in are guests (nothing is saved).
+try:
+    from supabase import Client, create_client
+    from supabase_auth.errors import AuthApiError, AuthError
+    SUPABASE_AVAILABLE = True
+except ImportError:
+    SUPABASE_AVAILABLE = False
+    Client = None
+    create_client = None
+    AuthApiError = Exception
+    AuthError = Exception
+
 ALLOW_ANONYMOUS = True
-PUBLIC_USER_ID = "public"
+PUBLIC_USER_ID = "public"  # Kept for backward compatibility references
+EMAIL_REGEX = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+MIN_PASSWORD_LENGTH = 8
 
-OTP_COOLDOWN_SECONDS = 30   # wait between "Send code" presses
-OTP_MAX_ATTEMPTS = 5        # wrong codes allowed before a new code is needed
-PHONE_RE = re.compile(r"^\+[1-9]\d{7,14}$")  # E.164, e.g. +919876543210
-CODE_RE = re.compile(r"^\d{4,10}$")
+# Session keys preserved across user transitions
+_KEEP = {
+    "supabase_session",
+    "supabase_user",
+    "active_user",
+    "anon_user_id",
+    "intro_played",
+    "auth_flash_message",
+    "auth_flash_type",
+}
 
-# Session keys that survive a change of user
-_KEEP = {"phone_user", "demo_user", "active_user", "guest_id", "intro_played"}
-
-# Styles for the login panel. app.py appends this to its theme CSS.
-# Deliberately plain: no fixed positioning, nothing that can cover a click.
+# Styles for the login panel
 CORNER_CSS = """
 <style>
 /* Hide Streamlit's own Deploy button */
 [data-testid="stAppDeployButton"] { display: none !important; }
 
 .st-key-auth_corner {
-    max-width: 460px;
+    max-width: 480px;
     margin: 0 0 14px 0;
     position: relative;
     z-index: 5;
 }
 
 .st-key-auth_corner [data-testid="stExpander"] {
-    background: rgba(255, 255, 255, 0.92);
+    background: rgba(255, 255, 255, 0.94);
+    border: 1px solid rgba(0, 0, 0, 0.08);
+    border-radius: 12px;
 }
 
 .st-key-auth_corner summary {
@@ -77,135 +78,244 @@ CORNER_CSS = """
 .st-key-auth_corner div.stButton > button {
     pointer-events: auto !important;
 }
+
+.st-key-skip_intro_btn {
+    position: fixed;
+    top: 18px;
+    right: 24px;
+    z-index: 100001;
+}
+
+.st-key-skip_intro_btn button {
+    background: rgba(6, 36, 26, 0.90) !important;
+    color: #E4FBC2 !important;
+    border: 1px solid #C9A24B !important;
+    border-radius: 999px !important;
+    padding: 6px 14px !important;
+    font-weight: 600 !important;
+    cursor: pointer !important;
+    pointer-events: auto !important;
+}
 </style>
 """
 
 
-# ---------- config helpers ----------
-def _google_provider():
-    """Return (enabled, provider_name).
-
-    Streamlit supports two secrets layouts:
-      [auth] client_id = ...           -> default provider (name None)
-      [auth.google] client_id = ...    -> named provider ("google")
-    """
-    if not hasattr(st, "login"):
-        return False, None
+# =====================================================================
+# SUPABASE CLIENT SETUP & CREDENTIALS
+# =====================================================================
+def get_supabase_credentials() -> Tuple[Optional[str], Optional[str]]:
+    """Retrieve SUPABASE_URL and SUPABASE_ANON_KEY from st.secrets safely."""
     try:
-        cfg = st.secrets["auth"]
-        if cfg.get("client_id"):
-            return True, None
-        named = []
-        for name in cfg.keys():
-            sub = cfg[name]
-            if hasattr(sub, "get") and sub.get("client_id"):
-                named.append(name)
-        if named:
-            return True, ("google" if "google" in named else named[0])
+        # Check flat top-level keys
+        url = st.secrets.get("SUPABASE_URL") or st.secrets.get("supabase_url")
+        key = st.secrets.get("SUPABASE_ANON_KEY") or st.secrets.get("supabase_anon_key")
+        if url and key:
+            return str(url).strip(), str(key).strip()
+
+        # Check nested [supabase] section
+        sub = st.secrets.get("supabase", {})
+        if isinstance(sub, dict):
+            url = sub.get("url") or sub.get("SUPABASE_URL")
+            key = sub.get("anon_key") or sub.get("SUPABASE_ANON_KEY") or sub.get("key")
+            if url and key:
+                return str(url).strip(), str(key).strip()
     except Exception:
         pass
-    return False, None
+    return None, None
 
 
-def _google_enabled():
-    return _google_provider()[0]
-
-
-def _twilio():
-    """Return the [twilio] secrets, or None if phone login is not configured."""
-    try:
-        cfg = st.secrets["twilio"]
-        if cfg["account_sid"] and cfg["auth_token"] and cfg["verify_sid"]:
-            return cfg
-    except Exception:
-        pass
-    return None
-
-
-def _demo_enabled():
-    """Demo login is OFF unless [dev] enabled = true is in secrets.toml."""
-    try:
-        return bool(st.secrets["dev"]["enabled"])
-    except Exception:
+def is_supabase_configured() -> bool:
+    """Return True only if valid, non-placeholder credentials are present."""
+    if not SUPABASE_AVAILABLE:
         return False
+    url, key = get_supabase_credentials()
+    if not url or not key:
+        return False
+    # Avoid placeholder dummy entries
+    if "your-project" in url.lower() or "your-anon-key" in key.lower():
+        return False
+    return True
 
 
-# ---------- Twilio Verify (plain REST, no extra package) ----------
-def _send_code(phone):
-    cfg = _twilio()
-    r = requests.post(
-        f"https://verify.twilio.com/v2/Services/{cfg['verify_sid']}/Verifications",
-        data={"To": phone, "Channel": "sms"},
-        auth=(cfg["account_sid"], cfg["auth_token"]),
-        timeout=15,
-    )
-    r.raise_for_status()
+@st.cache_resource(show_spinner=False)
+def get_supabase_client() -> Optional[Client]:
+    """
+    Cached Supabase client initialization.
+    Uses ONLY the public anon key. Never uses or requests service_role key.
+    """
+    if not is_supabase_configured():
+        return None
+    url, key = get_supabase_credentials()
+    try:
+        return create_client(url, key)
+    except Exception as exc:
+        logging.warning("Failed to initialize Supabase client: %s", exc)
+        return None
 
 
-def _check_code(phone, code):
-    cfg = _twilio()
-    r = requests.post(
-        f"https://verify.twilio.com/v2/Services/{cfg['verify_sid']}/VerificationCheck",
-        data={"To": phone, "Code": code},
-        auth=(cfg["account_sid"], cfg["auth_token"]),
-        timeout=15,
-    )
-    return r.ok and r.json().get("status") == "approved"
+# =====================================================================
+# VALIDATION & ERROR TRANSLATION HELPERS
+# =====================================================================
+def validate_email(email: str) -> Tuple[bool, str]:
+    """Validate email format and length."""
+    if not email or not isinstance(email, str):
+        return False, "Please enter your email address."
+    clean = email.strip()
+    if not EMAIL_REGEX.match(clean):
+        return False, "Please enter a valid email address (e.g., user@example.com)."
+    return True, ""
 
 
-# ---------- current user ----------
+def validate_password(password: str, confirm_password: Optional[str] = None) -> Tuple[bool, str]:
+    """Validate password length and confirmation match."""
+    if not password:
+        return False, "Please enter a password."
+    if len(password) < MIN_PASSWORD_LENGTH:
+        return False, f"Password must be at least {MIN_PASSWORD_LENGTH} characters long."
+    if confirm_password is not None and password != confirm_password:
+        return False, "Passwords do not match. Please re-enter."
+    return True, ""
+
+
+def format_auth_error(exc: Exception) -> str:
+    """Translate technical Supabase/network errors into clear, friendly guidance."""
+    msg = str(exc)
+    msg_lower = msg.lower()
+
+    if "invalid login credentials" in msg_lower or "invalid_grant" in msg_lower or "wrong password" in msg_lower:
+        return "Incorrect email or password. Please verify your credentials and try again."
+    if "email not confirmed" in msg_lower:
+        return (
+            "Email not confirmed yet. Please check your inbox (and spam folder) for the confirmation link. "
+            "(For demos/testing, email confirmation can be disabled in Supabase: Project Settings -> Auth -> Email)."
+        )
+    if "user already registered" in msg_lower or "already exists" in msg_lower:
+        return "An account with this email already exists. Please log in or use Forgot Password."
+    if "password should be at least" in msg_lower or "weak_password" in msg_lower:
+        return f"Password is too weak. Please choose a password with at least {MIN_PASSWORD_LENGTH} characters."
+    if "rate limit" in msg_lower or "429" in msg_lower or "too many requests" in msg_lower:
+        return "Too many requests in a short time. Please wait a moment before trying again."
+    if "network" in msg_lower or "connection" in msg_lower or "failed to establish" in msg_lower:
+        return "Network connection error. Could not connect to the Supabase server. Please check your connection."
+    return f"Authentication error: {msg}"
+
+
+# =====================================================================
+# DATA MERGING & SESSION REFRESH
+# =====================================================================
+def merge_anon_data_to_user(anon_id: str, new_user_id: str, db_name: Optional[str] = None):
+    """
+    Merge items and rewards saved during an anonymous session into the user's permanent account.
+    """
+    if not anon_id or not new_user_id or anon_id == new_user_id:
+        return
+    try:
+        if not db_name:
+            try:
+                import data_base
+                db_name = getattr(data_base, "DB_NAME", "recycling.db")
+            except Exception:
+                db_name = "recycling.db"
+        conn = sqlite3.connect(db_name)
+        with conn:
+            conn.execute(
+                "UPDATE recycling_events SET user_id = ? WHERE user_id = ?",
+                (new_user_id, anon_id)
+            )
+            conn.execute(
+                "UPDATE reward_events SET user_id = ? WHERE user_id = ?",
+                (new_user_id, anon_id)
+            )
+            conn.execute(
+                "UPDATE daily_activity SET user_id = ? WHERE user_id = ?",
+                (new_user_id, anon_id)
+            )
+            conn.execute(
+                "UPDATE ai_corrections SET user_id = ? WHERE user_id = ?",
+                (new_user_id, anon_id)
+            )
+        conn.close()
+    except Exception as exc:
+        logging.warning("Failed to merge anonymous data into user account: %s", exc)
+
+
+def refresh_session_if_needed(client: Optional[Client] = None):
+    """Check session expiration and refresh if expiring within 60 seconds."""
+    session = st.session_state.get("supabase_session")
+    if not session:
+        return
+
+    expires_at = getattr(session, "expires_at", None)
+    if not expires_at:
+        return
+
+    now = time.time()
+    # If session expires within 60 seconds or already expired
+    if (expires_at - now) < 60:
+        client = client or get_supabase_client()
+        refresh_token = getattr(session, "refresh_token", None)
+        if client and refresh_token:
+            try:
+                refreshed = client.auth.refresh_session(refresh_token)
+                if refreshed and refreshed.session:
+                    st.session_state.supabase_session = refreshed.session
+                    st.session_state.supabase_user = refreshed.user
+            except Exception:
+                # If refresh fails, log out gracefully to prevent corrupted state
+                _clear_auth_state()
+
+
+def _clear_auth_state():
+    """Clear all user credentials and session storage."""
+    st.session_state.pop("supabase_session", None)
+    st.session_state.pop("supabase_user", None)
+    st.session_state.pop("active_user", None)
+    st.session_state.pop("anon_user_id", None)
+
+
+# =====================================================================
+# USER IDENTITY RESOLUTION
+# =====================================================================
 def get_user():
-    """Return the logged-in user dict, or None if nobody is logged in."""
-    if _google_enabled() and getattr(st.user, "is_logged_in", False):
-        email = getattr(st.user, "email", None)
-        uid = getattr(st.user, "sub", None) or email
-        if uid:
+    """Return the authenticated Supabase user dict, or None if not logged in."""
+    refresh_session_if_needed()
+    user_obj = st.session_state.get("supabase_user")
+    if user_obj:
+        user_id = getattr(user_obj, "id", None)
+        email = getattr(user_obj, "email", None)
+        if user_id:
+            display_name = email.split("@")[0] if email else "Supabase User"
             return {
-                "id": f"google:{uid}",
-                "name": getattr(st.user, "name", None) or email or "Google user",
+                "id": str(user_id),
+                "name": display_name,
                 "email": email,
-                "provider": "google",
+                "provider": "supabase",
+                "is_guest": False,
             }
-
-    phone = st.session_state.get("phone_user")
-    if phone:
-        return {"id": f"phone:{phone}", "name": phone, "phone": phone, "provider": "phone"}
-
-    demo = st.session_state.get("demo_user")
-    if demo and _demo_enabled():
-        return {"id": f"demo:{demo}", "name": demo, "provider": "demo"}
-
     return None
 
 
 def resolve_user():
-    """Return the current user, or a temporary guest. Never blocks the page."""
+    """
+    Return the active user dict. Never blocks the page.
+    If not logged in, allocates an isolated per-session anonymous UUID.
+    """
     user = get_user()
 
-    if user is None and ALLOW_ANONYMOUS:
+    if user is None:
+        anon_id = st.session_state.get("anon_user_id")
+        if not anon_id:
+            anon_id = f"anon:{uuid.uuid4().hex}"
+            st.session_state.anon_user_id = anon_id
         user = {
-            "id": PUBLIC_USER_ID,
+            "id": anon_id,
             "name": "Visitor",
+            "email": None,
             "provider": "public",
             "is_guest": False,
         }
-    elif user is None:
-        guest_id = st.session_state.get("guest_id")
-        if not guest_id:
-            guest_id = uuid.uuid4().hex
-            st.session_state.guest_id = guest_id
-        user = {
-            "id": f"guest:{guest_id}",
-            "name": "Guest",
-            "provider": "guest",
-            "is_guest": True,
-        }
-    else:
-        user["is_guest"] = False
 
-    # A different identity on this browser tab (guest -> user, user -> guest,
-    # or user A -> user B): wipe the previous identity's batch, bins, advice
-    # etc. so nothing leaks between accounts.
+    # If identity on this browser tab switched, clear old session state to prevent leaks
     if st.session_state.get("active_user") != user["id"]:
         for key in list(st.session_state.keys()):
             if key not in _KEEP:
@@ -215,198 +325,190 @@ def resolve_user():
     return user
 
 
-# ---------- small display helpers ----------
-def _mask_phone(phone):
-    phone = phone or ""
-    return phone[:3] + "•" * max(len(phone) - 7, 0) + phone[-4:] if len(phone) > 7 else phone
+# =====================================================================
+# AUTH FLOW ACTIONS
+# =====================================================================
+def sign_in_user(email: str, password: str, client: Optional[Client] = None) -> Tuple[bool, str]:
+    """Execute Supabase email + password sign in."""
+    valid_e, err_e = validate_email(email)
+    if not valid_e:
+        return False, err_e
+    valid_p, err_p = validate_password(password)
+    if not valid_p:
+        return False, err_p
 
+    client = client or get_supabase_client()
+    if not client:
+        return False, "Supabase client is not configured."
 
-def _short_name(user):
-    if user["provider"] == "phone":
-        return _mask_phone(user["name"])
-    first = (user.get("name") or "").split("@")[0].split(" ")[0]
-    return first[:14] or "Account"
-
-
-# ---------- login forms ----------
-def _start_google_login():
-    """Button callback. Runs BEFORE the page reruns (same as the original
-    working pattern). Any error is saved and shown instead of vanishing."""
-    st.session_state.pop("login_error", None)
-    _, provider = _google_provider()
     try:
-        if provider:
-            st.login(provider)
-        else:
-            st.login()
-    except Exception as error:
-        st.session_state["login_error"] = str(error)
+        response = client.auth.sign_in_with_password({
+            "email": email.strip(),
+            "password": password,
+        })
+        if response and response.user and response.session:
+            pre_login_anon_id = st.session_state.get("anon_user_id")
+            st.session_state.supabase_session = response.session
+            st.session_state.supabase_user = response.user
+            if pre_login_anon_id:
+                merge_anon_data_to_user(pre_login_anon_id, str(response.user.id))
+            return True, "Successfully logged in!"
+        elif response and response.user and not response.session:
+            return False, "Login requires email confirmation. Please check your inbox."
+        return False, "Unable to sign in. Please try again."
+    except Exception as exc:
+        return False, format_auth_error(exc)
 
 
-def _google_form():
-    st.button(
-        "🔐 Continue with Google",
-        on_click=_start_google_login,
-        use_container_width=True,
-        key="g_login",
+def sign_up_user(email: str, password: str, confirm_password: str, client: Optional[Client] = None) -> Tuple[bool, str]:
+    """Execute Supabase email + password registration."""
+    valid_e, err_e = validate_email(email)
+    if not valid_e:
+        return False, err_e
+    valid_p, err_p = validate_password(password, confirm_password)
+    if not valid_p:
+        return False, err_p
+
+    client = client or get_supabase_client()
+    if not client:
+        return False, "Supabase client is not configured."
+
+    try:
+        response = client.auth.sign_up({
+            "email": email.strip(),
+            "password": password,
+        })
+        if response and response.session and response.user:
+            pre_login_anon_id = st.session_state.get("anon_user_id")
+            st.session_state.supabase_session = response.session
+            st.session_state.supabase_user = response.user
+            if pre_login_anon_id:
+                merge_anon_data_to_user(pre_login_anon_id, str(response.user.id))
+            return True, "Account created successfully and signed in!"
+        elif response and response.user:
+            return True, "Sign up successful! Please check your email to confirm your account."
+        return False, "Registration could not be completed. Please try again."
+    except Exception as exc:
+        return False, format_auth_error(exc)
+
+
+def reset_password(email: str, client: Optional[Client] = None) -> Tuple[bool, str]:
+    """Send Supabase password reset link to user's email."""
+    valid_e, err_e = validate_email(email)
+    if not valid_e:
+        return False, err_e
+
+    client = client or get_supabase_client()
+    if not client:
+        return False, "Supabase client is not configured."
+
+    try:
+        client.auth.reset_password_for_email(email.strip())
+        return True, "Password reset link sent! Check your inbox."
+    except Exception as exc:
+        return False, format_auth_error(exc)
+
+
+def sign_out_user(client: Optional[Client] = None):
+    """Sign out the current user and flush session state."""
+    client = client or get_supabase_client()
+    if client:
+        try:
+            client.auth.sign_out()
+        except Exception as exc:
+            logging.info("Supabase sign out notice: %s", exc)
+    _clear_auth_state()
+
+
+# =====================================================================
+# UI COMPONENTS
+# =====================================================================
+def _render_unconfigured_panel():
+    """Friendly setup guidance shown when Supabase secrets are not configured."""
+    st.info(
+        "👋 **Anonymous mode active**: You can use every feature (photo classification, "
+        "Eco Points, Bengaluru rules, and digital twin simulation) right now with full privacy.\n\n"
+        "To enable permanent multi-device accounts, configure **Supabase Auth** (100% Free):"
     )
-    error = st.session_state.get("login_error")
-    if error:
-        st.error(
-            "Google login is not set up correctly. Check the [auth] block in "
-            ".streamlit/secrets.toml (redirect_uri, cookie_secret, client_id, "
-            "client_secret, server_metadata_url) and that Authlib is "
-            "installed (pip install Authlib)."
+    with st.expander("🛠️ How to configure Supabase Auth (Free Tier)", expanded=False):
+        st.markdown(
+            """
+            1. Create a free account at [supabase.com](https://supabase.com) and start a new project.
+            2. Go to **Project Settings** -> **API**.
+            3. Copy your **Project URL** and the public **`anon` key** (NEVER copy the `service_role` key).
+            4. In `.streamlit/secrets.toml` (locally) or Streamlit Community Cloud Settings:
+            ```toml
+            SUPABASE_URL = "https://your-project.supabase.co"
+            SUPABASE_ANON_KEY = "your-public-anon-key"
+            ```
+            5. Restart the application.
+            """
         )
-        st.caption(f"Technical details: {error}")
-
-
-def _phone_form():
-    st.markdown("**Log in with your phone**")
-
-    raw = st.text_input(
-        "Phone number with country code",
-        placeholder="+919876543210",
-        key="phone_input",
-    )
-    phone = re.sub(r"[\s\-()]", "", raw or "")
-
-    sent_to = st.session_state.get("otp_sent_to")
-    last = st.session_state.get("otp_sent_at", 0.0)
-    wait = int(OTP_COOLDOWN_SECONDS - (time.time() - last))
-
-    if st.button(
-        "Resend code" if sent_to else "Send code",
-        use_container_width=True,
-        disabled=bool(sent_to) and wait > 0,
-        key="otp_send",
-    ):
-        if not PHONE_RE.match(phone):
-            st.error("Enter the number in international format, e.g. +919876543210.")
-        else:
-            sent = False
-            try:
-                _send_code(phone)
-                sent = True
-            except Exception:
-                st.error(
-                    "Could not send the code. Check the number and your "
-                    "Twilio settings (trial accounts can only text numbers "
-                    "verified in Twilio) and try again."
-                )
-            if sent:
-                st.session_state.otp_sent_to = phone
-                st.session_state.otp_sent_at = time.time()
-                st.session_state.otp_attempts = 0
-                st.rerun()
-
-    if sent_to:
-        note = f"Code sent to {_mask_phone(sent_to)}."
-        if wait > 0:
-            note += f" You can ask for a new one in {wait}s."
-        st.caption(note)
-
-        code = st.text_input("Verification code", max_chars=10, key="otp_code")
-
-        if st.button("Verify and log in", use_container_width=True, key="otp_verify"):
-            attempts = st.session_state.get("otp_attempts", 0)
-            code = (code or "").strip()
-
-            if attempts >= OTP_MAX_ATTEMPTS:
-                st.error("Too many wrong attempts. Please request a new code.")
-            elif not CODE_RE.match(code):
-                st.error("Enter the digits from the SMS.")
-            else:
-                approved = None
-                try:
-                    approved = _check_code(sent_to, code)
-                except Exception:
-                    st.error("Could not verify the code right now. Please try again.")
-
-                if approved is True:
-                    st.session_state.phone_user = sent_to
-                    st.rerun()
-                elif approved is False:
-                    st.session_state.otp_attempts = attempts + 1
-                    st.error("That code is wrong or has expired.")
-
-
-def _demo_form():
-    st.warning(
-        "Demo login is for local testing only. It does not verify who you are."
-    )
-    name = st.text_input("Pick any display name", max_chars=24, key="demo_name")
-    if st.button("Continue as demo user", use_container_width=True, key="demo_go"):
-        clean = re.sub(r"[^a-z0-9_-]", "", (name or "").strip().lower())
-        if len(clean) < 2:
-            st.error("Use at least 2 letters or numbers.")
-        else:
-            st.session_state.demo_user = clean
-            st.rerun()
 
 
 def _login_panel():
-    google = _google_enabled()
-    phone = _twilio() is not None
-    demo = _demo_enabled()
-
-    # Status line: tells you instantly which methods this app can see.
-    st.caption(
-        f"Streamlit {st.__version__} • "
-        f"Google: {'ready' if google else 'not set up'} • "
-        f"Phone: {'ready' if phone else 'not set up'} • "
-        f"Demo: {'on' if demo else 'off'}"
-    )
-
-    if not (google or phone or demo):
-        st.error(
-            "No login method is set up yet. Create .streamlit/secrets.toml "
-            "next to app.py with the Google ([auth]), Twilio ([twilio]) or "
-            "demo ([dev]) settings, then fully restart the app."
-        )
+    """Render the Log In / Sign Up / Forgot Password tabs."""
+    if not is_supabase_configured():
+        _render_unconfigured_panel()
         return
 
-    st.caption("Log in to save your recycling history, Eco Points and streaks.")
+    tab_login, tab_signup, tab_forgot = st.tabs(["Log in", "Sign up", "Forgot password"])
 
-    if google:
-        _google_form()
-        if phone or demo:
-            st.markdown("**— or —**")
+    with tab_login:
+        st.caption("Sign in to sync your Eco Points, streaks, and recycling history.")
+        login_email = st.text_input("Email", key="sb_login_email", placeholder="you@example.com")
+        login_pass = st.text_input("Password", type="password", key="sb_login_pass")
 
-    if phone:
-        _phone_form()
-        if demo:
-            st.markdown("**— or —**")
+        if st.button("Log in", use_container_width=True, key="sb_btn_login"):
+            success, msg = sign_in_user(login_email, login_pass)
+            if success:
+                st.success(msg)
+                time.sleep(0.3)
+                st.rerun()
+            else:
+                st.error(msg)
 
-    if demo:
-        _demo_form()
+    with tab_signup:
+        st.caption("Create a free account to permanently save your recycling journey.")
+        signup_email = st.text_input("Email", key="sb_signup_email", placeholder="you@example.com")
+        signup_pass = st.text_input("Password (min 8 characters)", type="password", key="sb_signup_pass")
+        signup_confirm = st.text_input("Confirm password", type="password", key="sb_signup_confirm")
 
+        if st.button("Create account", use_container_width=True, key="sb_btn_signup"):
+            success, msg = sign_up_user(signup_email, signup_pass, signup_confirm)
+            if success:
+                st.success(msg)
+                if st.session_state.get("supabase_user"):
+                    time.sleep(0.3)
+                    st.rerun()
+            else:
+                st.error(msg)
 
-# ---------- the panel ----------
-def _sign_out(user):
-    st.session_state.pop("phone_user", None)
-    st.session_state.pop("demo_user", None)
-    st.session_state.pop("active_user", None)
-    if user["provider"] == "google":
-        st.logout()
-    else:
-        st.rerun()
+    with tab_forgot:
+        st.caption("Enter your email to receive a password reset link.")
+        forgot_email = st.text_input("Email", key="sb_forgot_email", placeholder="you@example.com")
+
+        if st.button("Send reset link", use_container_width=True, key="sb_btn_forgot"):
+            success, msg = reset_password(forgot_email)
+            if success:
+                st.success(msg)
+            else:
+                st.error(msg)
 
 
 def account_corner(user):
-    """Login panel for guests, account panel otherwise (a normal page block)."""
+    """Account panel in the upper section of the page."""
     with st.container(key="auth_corner"):
-        if user["is_guest"] or user["provider"] == "public":
-            label = "🔐 Log in (optional)" if user["provider"] == "public" else "🔐 Log in"
-            with st.expander(label, expanded=False):
+        if user.get("provider") == "public" or user.get("is_guest"):
+            with st.expander("🔐 Log in (optional)", expanded=False):
                 _login_panel()
         else:
-            with st.expander(f"👤 {_short_name(user)}", expanded=False):
-                label = user.get("email") or (
-                    _mask_phone(user["name"]) if user["provider"] == "phone"
-                    else user["name"]
-                )
-                st.markdown(f"**{label}**")
-                st.caption(f"Logged in with {user['provider']}")
-                if st.button("Sign out", use_container_width=True, key="sign_out"):
-                    _sign_out(user)
+            display_name = user.get("name") or "Account"
+            with st.expander(f"👤 {display_name}", expanded=False):
+                email = user.get("email") or "User"
+                st.markdown(f"**Signed in as:** `{email}`")
+                st.caption(f"User ID: `{user.get('id')}`")
+                st.caption("Provider: Supabase Auth (Free Tier)")
+                if st.button("Sign out", use_container_width=True, key="sb_btn_signout"):
+                    sign_out_user()
+                    st.rerun()

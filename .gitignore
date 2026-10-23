@@ -1,0 +1,20 @@
+# Python artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.vscode/__pycache__/
+
+# Local SQLite databases
+recycling.db
+*.db-journal
+
+# Secrets & environment configurations
+.env
+.env.*
+secrets.toml
+*.secrets.toml
+.streamlit/secrets.toml
+.vscode/.streamlit/secrets.toml
+.vscode/secreats.toml
+**/secreats.toml
