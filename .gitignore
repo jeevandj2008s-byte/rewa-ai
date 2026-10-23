@@ -4,17 +4,24 @@ __pycache__/
 *.pyo
 *.pyd
 .vscode/__pycache__/
+.venv/
+venv/
 
-# Local SQLite databases
+# Local databases
 recycling.db
+*.db
 *.db-journal
 
 # Secrets & environment configurations
-.env
-.env.*
+.env*
 secrets.toml
 *.secrets.toml
+**/secrets.toml
 .streamlit/secrets.toml
 .vscode/.streamlit/secrets.toml
 .vscode/secreats.toml
 **/secreats.toml
+
+# IDE & deployment artifacts
+.vercel
+.vscode/

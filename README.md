@@ -39,7 +39,7 @@ Take or upload a photo of a waste item. The app uses zero-shot vision AI (CLIP) 
 ## 🧠 How It Works
 
 1. **Input Photo:** Upload an image file (JPG, PNG, WEBP), take a camera shot, or select a sample photo.
-2. **AI Similarity Scoring:** Hugging Face `transformers` runs `openai/clip-vit-large-patch14` zero-shot classification against 22 candidate labels. The resulting number is a **similarity score**, not a statistical probability or guarantee. If the similarity score is below 55%, manual confirmation is prompted.
+2. **AI Similarity Scoring:** Hugging Face `transformers` runs zero-shot classification (`openai/clip-vit-base-patch32` by default for fast, low-memory cloud inference) against 22 candidate labels. The resulting number is a **similarity score**, not a statistical probability or guarantee. If the similarity score is below 55%, manual confirmation is prompted.
 3. **Bengaluru Municipal Rules & Guidance:** Rules from `data/bengaluru_rules.json` determine whether the item goes to Wet Waste, Dry Waste, Sanitary, E-Waste, or Domestic Hazardous, highlighting edge cases (e.g. greasy pizza box bottoms go to wet waste).
 4. **User Confirmation & Correction:** The user confirms or corrects both the detected item label and the target bin. Any disagreement is logged to calculate human correction rates.
 5. **Virtual Bins & Rewards:** Confirmed items update the Digital Twin bin counts, increment simulated fill percentages, and award Virtual Eco Points.
@@ -53,27 +53,23 @@ ReWA.AI/
 ├── README.md                          # Project documentation and user guide
 ├── requirements.txt                   # Production dependencies for Streamlit Cloud
 ├── app.py                             # Root launcher for Streamlit Cloud
-├── test_rewa.py                       # Root test runner
-├── evaluate_model.py                  # Standalone CLIP evaluation and benchmarking script
+├── app1.py                            # Main Streamlit web application
+├── auth.py                            # Supabase Auth (Email+Password) & Anonymous session isolation
 ├── bin_rules.py                       # Single source of truth for bin mappings and labels
+├── data_base.py                       # SQLite database operations & AI correction logging
+├── digital_twin.py                    # Digital Twin virtual bins and capacity simulation
+├── evaluate_model.py                  # Standalone CLIP evaluation and benchmarking script
+├── recycling_logic.py                 # Bin decision wrappers
+├── rewabuddy_advisor.py               # LLM recycling & reuse assistant
+├── rewards.py                         # Eco points, daily streaks, and daily goals
+├── rewa_logic.py                      # Validation, badges, garden, and missions logic
+├── test_rewa.py                       # Unittest test suite (37 tests)
 ├── data/
 │   └── bengaluru_rules.json           # Bengaluru municipal waste segregation rules & sources
 ├── sample_images/                     # Folder for one-click demo test photos
 ├── eval_data/                         # Folder for labeled evaluation datasets (eval_data/<label>/<img.jpg>)
-├── docs/
-│   └── screenshots/                   # Application screenshots
-└── .vscode/
-    ├── app1.py                        # Main Streamlit web application
-    ├── auth.py                        # Supabase Auth (Email+Password) & Anonymous session isolation
-    ├── bin_rules.py                   # Centralized bin rules and candidate labels
-    ├── data_base.py                   # SQLite database operations & AI correction logging
-    ├── digital_twin.py                # Digital Twin virtual bins and capacity simulation
-    ├── recycling_logic.py             # Bin decision wrappers
-    ├── rewabuddy_advisor.py           # LLM recycling & reuse assistant
-    ├── rewards.py                     # Eco points, daily streaks, and daily goals
-    ├── rewa_logic.py                  # Validation, badges, garden, and missions logic
-    ├── test_rewa.py                   # Unittest test suite (37 tests)
-    └── requirements.txt               # Dependencies
+└── docs/
+    └── screenshots/                   # Application screenshots
 ```
 
 ---
@@ -86,8 +82,8 @@ ReWA.AI/
 
 ### 2. Clone the Repository
 ```bash
-git clone https://github.com/<your-username>/<your-repo>.git
-cd ReWA.AI
+git clone https://github.com/jeevandj2008s-byte/rewa-ai.git
+cd rewa-ai
 ```
 
 ### 3. Install Dependencies
@@ -96,14 +92,10 @@ pip install -r requirements.txt
 ```
 
 ### 4. Run the Streamlit Application
-You can run using either command:
 ```bash
-streamlit run app.py
+streamlit run app1.py
 ```
-*Or directly targeting the core app file:*
-```bash
-streamlit run .vscode/app1.py
-```
+*(Or `streamlit run app.py`)*
 
 Open `http://localhost:8501` in your browser.
 
@@ -111,14 +103,10 @@ Open `http://localhost:8501` in your browser.
 
 ## 🧪 How to Run Tests
 
-Run the complete automated test suite (checks session isolation, image validation, double-reward protection, badges, missions, and bin mapping completeness):
+Run the complete automated test suite (checks Supabase auth, session isolation, image validation, double-reward protection, badges, missions, and bin mapping completeness):
 
 ```bash
 python test_rewa.py
-```
-*Or using Python's standard unittest discovery:*
-```bash
-python -m unittest discover -s .vscode -p "test_*.py" -v
 ```
 
 ---
@@ -166,8 +154,8 @@ ReWA.AI is 100% free and open-source, designed to deploy on the free tier of **S
 
 1. Push your repository to GitHub.
 2. Sign in to [share.streamlit.io](https://share.streamlit.io).
-3. Click **"New app"**, select your repository and branch (`main`).
-4. Set **Main file path** to `app.py`.
+3. Click **"New app"**, select your repository (`jeevandj2008s-byte/rewa-ai`) and branch (`main`).
+4. Set **Main file path** to `app1.py` (or `app.py`).
 5. (Optional) Under **Advanced settings → Secrets**, paste your Supabase configuration:
    ```toml
    SUPABASE_URL = "https://your-project-id.supabase.co"
@@ -196,7 +184,7 @@ ReWA.AI uses Supabase Auth for optional email + password accounts:
 
 ## ⚠️ Known Limitations & Honest Notes
 
-- **Cold Starts & Streamlit Sleep Screen:** Streamlit Community Cloud puts free-tier apps into sleep mode after a period of inactivity. On wake-up, downloading the CLIP model weights (`~1.7 GB`) may take 1-2 minutes on the first classification attempt.
+- **Cold Starts & Streamlit Sleep Screen:** Streamlit Community Cloud puts free-tier apps into sleep mode after a period of inactivity. On wake-up, downloading the CLIP model weights may take 1-2 minutes on the first classification attempt.
 - **Similarity Scores vs Probability:** The confidence score displayed is a normalized cosine similarity score produced by CLIP over the fixed candidate label list. It is **not** a calibrated statistical probability or an absolute guarantee of correctness.
 - **Ephemeral Storage on Cloud:** Streamlit Community Cloud instances do not have persistent SSD storage across container redeployments. SQLite database records may reset when the application restarts. Use the **"Download history (CSV/JSON)"** button to back up your recycling records.
 - **Local Rules Variation:** While ReWA.AI incorporates official Bengaluru BBMP guidelines, rules and collection schedules can vary across individual wards, RWAs, and apartment complexes. Always check local notices.

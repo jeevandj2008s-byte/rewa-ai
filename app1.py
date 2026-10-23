@@ -2485,11 +2485,27 @@ def daily_chart(history, value_key, color, y_title, height=300):
 
 # ---------- AI MODEL ----------
 
-@st.cache_resource
+# The large CLIP model (~1.7 GB) exceeds Streamlit Community Cloud's memory
+# limit and crashes the app, so the smaller base model is the default.
+# Set REWA_MODEL (env var or top-level secret) to override.
+def _clip_model_name():
+    name = os.environ.get("REWA_MODEL")
+    if not name:
+        try:
+            name = st.secrets.get("REWA_MODEL")
+        except Exception:
+            name = None
+    return name or "openai/clip-vit-base-patch32"
+
+
+CLIP_MODEL = _clip_model_name()
+
+
+@st.cache_resource(show_spinner="Loading the AI model (first run can take a minute)...")
 def load_classifier():
     return pipeline(
         "zero-shot-image-classification",
-        model="openai/clip-vit-large-patch14"
+        model=CLIP_MODEL,
     )
 
 
