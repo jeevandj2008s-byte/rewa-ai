@@ -7,6 +7,11 @@ __pycache__/
 .venv/
 venv/
 
+# Model weights
+*.pt
+*.pth
+*.onnx
+
 # Local databases
 recycling.db
 *.db
@@ -25,3 +30,13 @@ secrets.toml
 # IDE & deployment artifacts
 .vercel
 .vscode/
+.agent/
+.agents/
+.gemini/
+.gsd/
+GSD-STYLE.md
+PROJECT_RULES.md
+VERSION
+adapters/
+model_capabilities.yaml
+scripts/

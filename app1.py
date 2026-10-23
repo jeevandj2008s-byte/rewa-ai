@@ -16,6 +16,7 @@ from transformers import pipeline
 
 import auth
 import data_base
+import detector
 import rewa_logic
 import rewards as rewards_module
 from data_base import create_data_base, get_events, get_bin_totals, log_correction, get_correction_stats
@@ -50,6 +51,21 @@ is_guest = current_user["is_guest"]
 
 create_data_base()
 init_rewards_db()
+
+# ---------- VISION & DETECTION SETTINGS (SIDEBAR) ----------
+with st.sidebar:
+    st.markdown("### ⚙️ Vision & Detection")
+    yolo_multi_object = st.toggle(
+        "🔍 Detect multiple objects (YOLO)",
+        value=True,
+        key="yolo_multi_object_enabled",
+        help="When enabled, YOLO isolates and crops every individual waste item in the photo, and CLIP classifies each item separately.",
+    )
+    if yolo_multi_object:
+        st.caption("🟢 **Multi-object detection active**: Photos with multiple items (e.g. bottle + pouch) will be split and classified individually.")
+    else:
+        st.caption("⚪ **Single-object mode**: Whole image is classified as one item.")
+    st.markdown("---")
 
 # ---------- GREENERY PALETTE ----------
 # Forest, emerald, sage and cream. (The CSS below defines the same colours as
@@ -2928,6 +2944,9 @@ def render_result(item, number, total, bin_status):
             )
 
         with verdict_col:
+            if item.get("is_multi_object") and item.get("detector_conf") is not None:
+                st.caption(f"🎯 **YOLO detector score:** `{item['detector_conf']:.0%}` (Object #{item.get('object_index', number)})")
+
             if best_score < 0.55:
                 st.warning(
                     "The similarity score is low. Try a clearer photo "
@@ -3036,6 +3055,16 @@ def render_result(item, number, total, bin_status):
             "label. Verify the actual material and follow local recycling "
             "rules before disposal."
         )
+
+        if total > 1 or item.get("is_multi_object"):
+            if st.button(
+                f"🗑️ Ignore / Remove {item['name']}",
+                key=f"del_item_{uid}",
+                help="Remove this object if it was mistakenly detected or is not waste",
+            ):
+                st.session_state.batch = [b for b in st.session_state.batch if b["uid"] != uid]
+                st.session_state.flash = ("info", f"Removed {item['name']} from current batch.")
+                st.rerun()
 
 
 # ---------- ECO JOURNEY (missions, badges, garden, passport) ----------
@@ -3427,30 +3456,75 @@ with result_row:
         if classify_clicked and images:
             try:
                 with st.spinner(
-                    "Loading AI model, first run may take a minute..."
+                    "Loading AI models (YOLO detector & CLIP classifier), first run may take a minute..."
                 ):
                     classifier = load_classifier()
+                    detector_model = detector.load_detector() if yolo_multi_object else None
+
                 new_batch = []
                 progress = st.progress(0.0, text="Analyzing your images...")
 
                 for position, item in enumerate(images, start=1):
                     try:
-                        predictions = classifier(
+                        t_start = time.time()
+                        detections, is_fallback = detector.classify_objects(
                             item["image"],
-                            candidate_labels=CANDIDATE_LABELS
-                        )[:3]
+                            classifier=classifier,
+                            candidate_labels=CANDIDATE_LABELS,
+                            detector_model=detector_model,
+                            multi_object_enabled=yolo_multi_object,
+                        )
+                        infer_time_ms = int((time.time() - t_start) * 1000)
 
-                        new_batch.append({
-                            "uid": uuid.uuid4().hex,
-                            "name": item["name"],
-                            "image": item["image"],
-                            "results": predictions,
-                            "best_label": predictions[0]["label"],
-                            "best_score": predictions[0]["score"],
-                            "fingerprint": hashlib.md5(
-                                item["image"].tobytes()
-                            ).hexdigest(),
-                        })
+                        if len(detections) > 1 and not is_fallback:
+                            # Multi-object detection: generate scene with numbered bounding boxes
+                            annotated_scene = detector.draw_bounding_boxes(item["image"], detections)
+                            for obj_idx, det in enumerate(detections, start=1):
+                                obj_uid = uuid.uuid4().hex
+                                new_batch.append({
+                                    "uid": obj_uid,
+                                    "name": f"{item['name']} (Object #{obj_idx})",
+                                    "parent_name": item["name"],
+                                    "parent_image": annotated_scene,
+                                    "image": det["crop"],
+                                    "crop": det["crop"],
+                                    "box": det["box"],
+                                    "object_index": obj_idx,
+                                    "total_objects": len(detections),
+                                    "is_multi_object": True,
+                                    "results": det["results"],
+                                    "best_label": det["best_label"],
+                                    "best_score": det["best_score"],
+                                    "detector_conf": det.get("detector_conf", 1.0),
+                                    "infer_time_ms": infer_time_ms,
+                                    "fingerprint": hashlib.md5(
+                                        det["crop"].tobytes() + f"{item['name']}_{obj_idx}".encode()
+                                    ).hexdigest(),
+                                })
+                        else:
+                            # Single-object or fallback: identical to existing single-result layout
+                            det = detections[0]
+                            new_batch.append({
+                                "uid": uuid.uuid4().hex,
+                                "name": item["name"],
+                                "parent_name": item["name"],
+                                "parent_image": None,
+                                "image": item["image"],
+                                "crop": item["image"],
+                                "box": det.get("box", [0, 0, item["image"].width, item["image"].height]),
+                                "object_index": 1,
+                                "total_objects": 1,
+                                "is_multi_object": False,
+                                "results": det["results"],
+                                "best_label": det["best_label"],
+                                "best_score": det["best_score"],
+                                "detector_conf": det.get("detector_conf", 1.0),
+                                "infer_time_ms": infer_time_ms,
+                                "fingerprint": hashlib.md5(
+                                    item["image"].tobytes()
+                                ).hexdigest(),
+                            })
+
                     except Exception as error:
                         logger.warning(
                             "Classification failed for %s: %s",
@@ -3474,7 +3548,7 @@ with result_row:
             except Exception as error:
                 st.error(
                     "The AI model could not be loaded. It needs an internet "
-                    "connection on the first run to download the CLIP model. Please try again."
+                    "connection on the first run to download the models. Please try again."
                 )
                 show_error_details(error)
 
@@ -3486,9 +3560,32 @@ with result_row:
                 "Your AI predictions and recycling advice will appear here."
             )
         else:
+            # Group by parent image to show scene overview if multiple objects were detected
+            parent_groups = {}
+            for b_item in batch:
+                pname = b_item.get("parent_name", b_item["name"])
+                parent_groups.setdefault(pname, []).append(b_item)
+
+            for pname, group_items in parent_groups.items():
+                if len(group_items) > 1 and group_items[0].get("parent_image") is not None:
+                    st.markdown(f"#### 📷 Multi-Object Scene: `{pname}` ({len(group_items)} objects found)")
+                    col_scene_img, col_scene_txt = st.columns([1, 1], gap="medium")
+                    with col_scene_img:
+                        st.image(
+                            group_items[0]["parent_image"],
+                            caption=f"Numbered bounding boxes for {pname}",
+                            use_container_width=True
+                        )
+                    with col_scene_txt:
+                        st.info(
+                            f"🎯 **YOLO isolated {len(group_items)} objects** in this photo. "
+                            "Each object is classified separately below with its own recycling guidance, "
+                            "Bengaluru municipal rules, and Virtual Eco Points."
+                        )
+
             if len(batch) > 1:
                 st.markdown(
-                    f'<span class="batch-pill">✅ {len(batch)} images '
+                    f'<span class="batch-pill">✅ {len(batch)} item(s) '
                     f'analysed</span>',
                     unsafe_allow_html=True
                 )
@@ -3550,7 +3647,9 @@ if batch:
                     resolve_bin(item["best_label"]) or "Unknown",
                     chosen_bin
                 )
-                status, detail = record_and_reward(item, chosen_bin)
+                item_to_record = dict(item)
+                item_to_record["best_label"] = chosen_label
+                status, detail = record_and_reward(item_to_record, chosen_bin)
 
                 if status == "ok":
                     ok_count += 1
@@ -3652,7 +3751,9 @@ if batch:
                         resolve_bin(item["best_label"]) or "Unknown",
                         category
                     )
-                    status, detail = record_and_reward(item, category)
+                    item_to_record = dict(item)
+                    item_to_record["best_label"] = confirmed_label
+                    status, detail = record_and_reward(item_to_record, category)
                     st.session_state.flash = status_message(
                         status, detail, confirmed_label, category
                     )

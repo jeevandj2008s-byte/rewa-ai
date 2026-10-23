@@ -512,3 +512,4 @@ def account_corner(user):
                 if st.button("Sign out", use_container_width=True, key="sb_btn_signout"):
                     sign_out_user()
                     st.rerun()
+

@@ -582,5 +582,214 @@ class SupabaseAuthTests(unittest.TestCase):
         self.assertEqual(old_count, 0)
 
 
+class MultiObjectDetectorTests(unittest.TestCase):
+    """Unit tests for YOLO detector, cropping, NMS, overlap merging, and fallback."""
+
+    def test_box_clamping(self):
+        import detector
+        # Out-of-bounds negative coordinates
+        clamped = detector.clamp_box([-50, -20, 150, 250], 100, 200)
+        self.assertEqual(clamped, [0, 0, 100, 200])
+
+        # Exceeding width and height
+        clamped2 = detector.clamp_box([10, 20, 500, 600], 100, 200)
+        self.assertEqual(clamped2, [10, 20, 100, 200])
+
+        # Degenerate inverted box
+        clamped3 = detector.clamp_box([80, 80, 50, 50], 100, 100)
+        self.assertGreater(clamped3[2], clamped3[0])
+        self.assertGreater(clamped3[3], clamped3[1])
+
+    def test_box_padding(self):
+        import detector
+        # Interior box with 10% padding
+        padded = detector.pad_box([20, 20, 60, 60], 100, 100, padding_ratio=0.10)
+        # width = 40, dx = 4 -> [16, 16, 64, 64]
+        self.assertEqual(padded, [16, 16, 64, 64])
+
+        # Box near border: should not exceed [0, 0, 100, 100]
+        padded_border = detector.pad_box([2, 2, 98, 98], 100, 100, padding_ratio=0.20)
+        self.assertEqual(padded_border, [0, 0, 100, 100])
+
+    def test_calculate_iou_and_containment(self):
+        import detector
+        # Non-overlapping
+        self.assertEqual(detector.calculate_iou([0, 0, 10, 10], [20, 20, 30, 30]), 0.0)
+        self.assertEqual(detector.calculate_containment([0, 0, 10, 10], [20, 20, 30, 30]), 0.0)
+
+        # Identical boxes
+        self.assertEqual(detector.calculate_iou([0, 0, 50, 50], [0, 0, 50, 50]), 1.0)
+        self.assertEqual(detector.calculate_containment([0, 0, 50, 50], [0, 0, 50, 50]), 1.0)
+
+        # Nested box (box2 completely inside box1)
+        b1 = [0, 0, 100, 100]  # area 10000
+        b2 = [20, 20, 40, 40]   # area 400
+        self.assertEqual(detector.calculate_containment(b1, b2), 1.0)
+        self.assertLess(detector.calculate_iou(b1, b2), 0.1)
+
+    def test_merge_overlapping_boxes(self):
+        import detector
+        # Two heavily overlapping boxes (e.g. bottle body + label)
+        b1 = {"box": [10, 10, 60, 60], "conf": 0.85}
+        b2 = {"box": [15, 15, 65, 65], "conf": 0.70}
+        merged = detector.merge_overlapping_boxes([b1, b2], iou_thresh=0.60)
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0]["box"], [10, 10, 65, 65])
+        self.assertEqual(merged[0]["conf"], 0.85)
+
+        # Two distinct non-overlapping boxes
+        b_distinct1 = {"box": [10, 10, 40, 40], "conf": 0.9}
+        b_distinct2 = {"box": [70, 70, 90, 90], "conf": 0.8}
+        merged_distinct = detector.merge_overlapping_boxes([b_distinct1, b_distinct2])
+        self.assertEqual(len(merged_distinct), 2)
+
+    def test_filter_and_cap_boxes(self):
+        import detector
+        img_w, img_h = 200, 200
+        boxes = [
+            {"box": [0, 0, 5, 5], "conf": 0.9},      # Tiny noise: 5x5 (< 24px)
+            {"box": [100, 10, 150, 80], "conf": 0.75}, # Valid object 2
+            {"box": [20, 10, 70, 80], "conf": 0.80},   # Valid object 1
+        ]
+        filtered = detector.filter_and_cap_boxes(boxes, img_w, img_h, min_size=20, max_objects=6)
+        self.assertEqual(len(filtered), 2)
+        # Verify left-to-right sorting (x1 ascending)
+        self.assertEqual(filtered[0]["box"][0], 20)
+        self.assertEqual(filtered[1]["box"][0], 100)
+
+        # Cap enforcement
+        many_boxes = [{"box": [i * 10, 10, i * 10 + 30, 60], "conf": 0.5 + i * 0.05} for i in range(10)]
+        capped = detector.filter_and_cap_boxes(many_boxes, 400, 200, max_objects=4)
+        self.assertEqual(len(capped), 4)
+
+    def test_mock_detect_objects(self):
+        from unittest.mock import MagicMock
+        import torch
+        import detector
+        from PIL import Image
+
+        img = Image.new("RGB", (200, 200), color="white")
+        mock_model = MagicMock()
+
+        # Mock boxes returned by Ultralytics YOLO
+        mock_box_data = MagicMock()
+        mock_box_data.__len__.return_value = 2
+        mock_box_data.xyxy = torch.tensor([[10.0, 10.0, 80.0, 120.0], [110.0, 20.0, 180.0, 140.0]])
+        mock_box_data.conf = torch.tensor([0.88, 0.76])
+
+        mock_result = MagicMock()
+        mock_result.boxes = mock_box_data
+        mock_model.predict.return_value = [mock_result]
+
+        detections = detector.detect_objects(img, model=mock_model)
+        self.assertEqual(len(detections), 2)
+        self.assertIn("crop", detections[0])
+        self.assertIn("box", detections[0])
+        self.assertIsInstance(detections[0]["crop"], Image.Image)
+
+    def test_mock_classify_objects_multi_and_fallback(self):
+        from unittest.mock import MagicMock
+        import detector
+        from PIL import Image
+
+        img = Image.new("RGB", (200, 200), color="white")
+        candidate_labels = ["plastic bottle", "paper sheet", "metal can"]
+
+        # Mock classifier returning dummy CLIP predictions
+        mock_classifier = MagicMock()
+        mock_classifier.side_effect = lambda crop, candidate_labels: [
+            {"label": "plastic bottle", "score": 0.85},
+            {"label": "metal can", "score": 0.10},
+            {"label": "paper sheet", "score": 0.05},
+        ]
+
+        # 1. Multi-object path with mock detector returning 2 items
+        mock_detector = MagicMock()
+        mock_box_data = MagicMock()
+        mock_box_data.__len__.return_value = 2
+        import torch
+        mock_box_data.xyxy = torch.tensor([[10.0, 10.0, 60.0, 80.0], [90.0, 20.0, 160.0, 120.0]])
+        mock_box_data.conf = torch.tensor([0.90, 0.80])
+        mock_result = MagicMock()
+        mock_result.boxes = mock_box_data
+        mock_detector.predict.return_value = [mock_result]
+
+        results, is_fallback = detector.classify_objects(
+            img,
+            classifier=mock_classifier,
+            candidate_labels=candidate_labels,
+            detector_model=mock_detector,
+            multi_object_enabled=True,
+        )
+        self.assertFalse(is_fallback)
+        self.assertEqual(len(results), 2)
+        self.assertEqual(results[0]["best_label"], "plastic bottle")
+        self.assertGreaterEqual(results[0]["best_score"], 0.8)
+
+        # 2. Fallback path when YOLO finds no objects (or toggle OFF)
+        mock_detector.predict.return_value = []
+        results_fallback, is_fallback_flag = detector.classify_objects(
+            img,
+            classifier=mock_classifier,
+            candidate_labels=candidate_labels,
+            detector_model=mock_detector,
+            multi_object_enabled=True,
+        )
+        self.assertTrue(is_fallback_flag)
+        self.assertEqual(len(results_fallback), 1)
+        self.assertEqual(results_fallback[0]["box"], [0, 0, 200, 200])
+
+    def test_draw_bounding_boxes(self):
+        import detector
+        from PIL import Image
+
+        img = Image.new("RGB", (300, 300), color="white")
+        detections = [
+            {"box": [20, 20, 100, 150], "best_label": "plastic bottle"},
+            {"box": [120, 30, 220, 180], "best_label": "cardboard box"},
+        ]
+        annotated = detector.draw_bounding_boxes(img, detections)
+        self.assertEqual(annotated.size, (300, 300))
+        self.assertEqual(annotated.mode, "RGB")
+
+    def test_downstream_recording_once_per_object(self):
+        import rewa_logic
+        # Simulate two objects from the same photo
+        env, rewards_mock, bins = make_env()
+
+        # Object 1 recorded
+        status1, _ = rewa_logic.record_and_reward(
+            uid="photo_obj_1",
+            label="plastic bottle",
+            category="Plastic",
+            fingerprint="fp_obj_1",
+            **env
+        )
+        self.assertEqual(status1, "ok")
+        self.assertEqual(rewards_mock.points, 10)
+
+        # Object 2 from same photo recorded (distinct UID and fingerprint)
+        status2, _ = rewa_logic.record_and_reward(
+            uid="photo_obj_2",
+            label="plastic bag",
+            category="Plastic",
+            fingerprint="fp_obj_2",
+            **env
+        )
+        self.assertEqual(status2, "ok")
+        self.assertEqual(rewards_mock.points, 20)
+
+        # Double click on Object 1 rejected as duplicate
+        status_dup, _ = rewa_logic.record_and_reward(
+            uid="photo_obj_1",
+            label="plastic bottle",
+            category="Plastic",
+            fingerprint="fp_obj_1",
+            **env
+        )
+        self.assertEqual(status_dup, "duplicate")
+        self.assertEqual(rewards_mock.points, 20)
+
+
 if __name__ == "__main__":
     unittest.main()
