@@ -24,7 +24,7 @@ Take or upload a photo of a waste item. The app uses zero-shot vision AI (CLIP) 
 | Feature | Description |
 |---|---|
 | 📷 **Photo Classification** | Upload photos, take live pictures with a webcam, or click "Try a sample photo". CLIP evaluates images across 22 candidate labels. |
-| 🔍 **Multi-Object Detection** | Two-stage vision pipeline (YOLOv8n + CLIP). Detects and separates multiple waste items held together, classifying each crop individually with its own guidance and points. |
+| 🔍 **Multi-Object Detection** | Pre-trained YOLOv8 waste detection model (`kendrickfff/waste-classification-yolov8-ken`, CC-BY-4.0) with 12 waste classes (`battery`, `biological`, `brown-glass`, `cardboard`, `clothes`, `green-glass`, `metal`, `paper`, `plastic`, `shoes`, `trash`, `white-glass`). Isolates individual items (e.g. plastic bottle + pouch held together) with numbered badges and runs CLIP crop refinement for fine-grained labels, bin routing, and individual Virtual Eco Points. |
 | 📍 **Bengaluru Segregation Rules** | Tailored to Bengaluru's BBMP household waste system: **Wet Waste** (green bin), **Dry Waste** (blue bag), **Sanitary Waste** (red/newspaper), **E-Waste**, and **Domestic Hazardous Waste**. Includes edge-case rules for food-soiled paper, dirty packaging, and sharps. |
 | 🌿 **ReWA AI Buddy** | AI recycling advisor powered by Google Gemini (with fallback to Groq, OpenRouter, and built-in Python heuristics) providing safe, practical preparation and reuse ideas. |
 | 🗑️ **Six Digital Twin Bins** | Plastic, Paper, Metal, Glass, Hazardous, and Biodegradable bins tracking item counts and simulated capacity. |
@@ -58,16 +58,20 @@ ReWA.AI/
 ├── auth.py                            # Supabase Auth (Email+Password) & Anonymous session isolation
 ├── bin_rules.py                       # Single source of truth for bin mappings and labels
 ├── data_base.py                       # SQLite database operations & AI correction logging
-├── detector.py                        # Two-stage YOLO object detection, cropping, NMS & fallback
+├── detector.py                        # Pre-trained YOLO waste detector, cropping, NMS & fallback
 ├── digital_twin.py                    # Digital Twin virtual bins and capacity simulation
 ├── evaluate_model.py                  # Standalone CLIP evaluation and benchmarking script
 ├── recycling_logic.py                 # Bin decision wrappers
 ├── rewabuddy_advisor.py               # LLM recycling & reuse assistant
 ├── rewards.py                         # Eco points, daily streaks, and daily goals
 ├── rewa_logic.py                      # Validation, badges, garden, and missions logic
-├── test_rewa.py                       # Unittest test suite (46 tests)
+├── test_rewa.py                       # Unittest test suite (48 tests)
+├── test_yolo.py                       # Standalone YOLO waste detection sanity & visual test
 ├── data/
-│   └── bengaluru_rules.json           # Bengaluru municipal waste segregation rules & sources
+│   ├── bengaluru_rules.json           # Bengaluru municipal waste segregation rules & sources
+│   └── yolo_class_map.json            # 12 YOLO waste classes mapped to canonical bins & CLIP labels
+├── models/
+│   └── MODEL_CARD.md                  # Model card for kendrickfff/waste-classification-yolov8-ken
 ├── sample_images/                     # Folder for one-click demo test photos
 ├── eval_data/                         # Folder for labeled evaluation datasets (eval_data/<label>/<img.jpg>)
 └── docs/
@@ -105,11 +109,17 @@ Open `http://localhost:8501` in your browser.
 
 ## 🧪 How to Run Tests
 
-Run the complete automated test suite (checks Supabase auth, session isolation, image validation, double-reward protection, badges, missions, and bin mapping completeness):
+Run the complete automated test suite (checks Supabase auth, session isolation, image validation, double-reward protection, badges, missions, YOLO class mapping coverage, and detector passthrough):
 
 ```bash
 python test_rewa.py
 ```
+
+To run the dedicated YOLO waste detection sanity check:
+```bash
+python test_yolo.py
+```
+*(You can also pass a custom photo: `python test_yolo.py path/to/my_photo.jpg` to inspect bounding boxes and crops).*
 
 ---
 
@@ -202,4 +212,6 @@ Made by **Jeevan DJ and J.Jebastin Immanuvel** — *Bangalore Institute of Techn
 
 ## 📄 License & Transparency
 This project is licensed under the MIT License.
-*Third-party notice:* ReWA.AI utilizes the `ultralytics` package for object detection, which is licensed under the AGPL-3.0 license (suitable for open-source / hackathon use).
+*Third-party notices:*
+- **Ultralytics YOLO:** Licensed under AGPL-3.0 (suitable for open-source / hackathon use).
+- **Pre-trained Waste Model:** Weights (`yolov8n-waste-12cls-best.pt` by `kendrickfff`) licensed under Creative Commons Attribution 4.0 International (CC-BY-4.0). Full model details are documented in [models/MODEL_CARD.md](models/MODEL_CARD.md).

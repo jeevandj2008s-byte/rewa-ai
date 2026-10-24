@@ -1,0 +1,96 @@
+{
+  "_meta": {
+    "model": "kendrickfff/waste-classification-yolov8-ken",
+    "architecture": "yolov8n",
+    "license": "CC-BY-4.0",
+    "total_classes": 12,
+    "description": "Mapping from pre-trained YOLO waste detection classes to ReWA.AI canonical bins and candidate labels for CLIP refinement."
+  },
+  "classes": {
+    "battery": {
+      "display_name": "Battery",
+      "canonical_bin": "Hazardous",
+      "default_label": "battery",
+      "candidate_labels": ["battery"],
+      "guidance_note": "Handle with care; do not crush or puncture. Deposit in designated E-waste/Hazardous bin."
+    },
+    "biological": {
+      "display_name": "Organic / Food Waste",
+      "canonical_bin": "Biodegradable",
+      "default_label": "food waste",
+      "candidate_labels": ["food waste", "fruit peel"],
+      "guidance_note": "Wet/organic waste for composting or green municipal bin."
+    },
+    "brown-glass": {
+      "display_name": "Brown Glass",
+      "canonical_bin": "Glass",
+      "default_label": "glass bottle",
+      "candidate_labels": ["glass bottle", "glass jar"],
+      "guidance_note": "Rinse clean, drain completely, and deposit gently in Glass bin."
+    },
+    "cardboard": {
+      "display_name": "Cardboard",
+      "canonical_bin": "Paper",
+      "default_label": "cardboard box",
+      "candidate_labels": ["cardboard box", "paper sheet", "newspaper"],
+      "guidance_note": "Flatten boxes and keep dry. Place in Paper / Dry Waste bin."
+    },
+    "clothes": {
+      "display_name": "Clothing / Textile",
+      "canonical_bin": null,
+      "default_label": "other waste",
+      "candidate_labels": ["other waste"],
+      "guidance_note": "Textiles do not go in standard recycling bins. Donate usable clothing or drop off at specialized fabric collection points."
+    },
+    "green-glass": {
+      "display_name": "Green Glass",
+      "canonical_bin": "Glass",
+      "default_label": "glass bottle",
+      "candidate_labels": ["glass bottle", "glass jar"],
+      "guidance_note": "Rinse clean, remove caps, and place in Glass bin."
+    },
+    "metal": {
+      "display_name": "Metal",
+      "canonical_bin": "Metal",
+      "default_label": "metal can",
+      "candidate_labels": ["metal can", "aerosol can", "paint can"],
+      "guidance_note": "Rinse cans and tins clean. Aerosols or paint cans require hazardous handling."
+    },
+    "paper": {
+      "display_name": "Paper",
+      "canonical_bin": "Paper",
+      "default_label": "paper sheet",
+      "candidate_labels": ["paper sheet", "newspaper", "cardboard box"],
+      "guidance_note": "Keep clean and dry. Oily or wet paper cannot be recycled."
+    },
+    "plastic": {
+      "display_name": "Plastic",
+      "canonical_bin": "Plastic",
+      "default_label": "plastic bottle",
+      "candidate_labels": ["plastic bottle", "plastic wrapper", "plastic bag"],
+      "guidance_note": "Rinse clean and dry. Rigid plastics go in standard plastic recycling; soft plastics to dry collection."
+    },
+    "shoes": {
+      "display_name": "Footwear",
+      "canonical_bin": null,
+      "default_label": "other waste",
+      "candidate_labels": ["other waste"],
+      "guidance_note": "Footwear is composite material. Donate if wearable or deposit at specialized shoe recycling drop-offs."
+    },
+    "trash": {
+      "display_name": "General Refuse / Trash",
+      "canonical_bin": null,
+      "default_label": "other waste",
+      "candidate_labels": ["other waste"],
+      "guidance_note": "Non-recyclable sanitary or reject waste. Dispose in general landfill / red/black bin."
+    },
+    "white-glass": {
+      "display_name": "Clear / White Glass",
+      "canonical_bin": "Glass",
+      "default_label": "glass jar",
+      "candidate_labels": ["glass jar", "glass bottle"],
+      "guidance_note": "Rinse clean, remove metal or plastic lids, and place in Glass bin."
+    }
+  }
+}
+

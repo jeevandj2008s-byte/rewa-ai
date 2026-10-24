@@ -752,6 +752,77 @@ class MultiObjectDetectorTests(unittest.TestCase):
         self.assertEqual(annotated.size, (300, 300))
         self.assertEqual(annotated.mode, "RGB")
 
+    def test_yolo_class_map_coverage(self):
+        """Verify 100% of the 12 YOLO waste classes are mapped in yolo_class_map.json."""
+        import json
+        from pathlib import Path
+        import bin_rules
+        import detector
+
+        cmap = detector.load_class_map()
+        classes = cmap.get("classes", {})
+        expected_classes = [
+            "battery", "biological", "brown-glass", "cardboard", "clothes",
+            "green-glass", "metal", "paper", "plastic", "shoes", "trash", "white-glass"
+        ]
+        self.assertEqual(len(classes), 12)
+        for cls_name in expected_classes:
+            self.assertIn(cls_name, classes, f"Missing class in mapping: {cls_name}")
+            cdata = classes[cls_name]
+            bin_name = cdata.get("canonical_bin")
+            if bin_name is not None:
+                self.assertIn(bin_name, bin_rules.CANONICAL_BINS)
+            self.assertIn(cdata.get("default_label"), bin_rules.CANDIDATE_LABELS)
+
+    def test_detector_metadata_and_classification_passthrough(self):
+        """Test YOLO waste metadata and class passthrough in multi-object pipeline."""
+        from unittest.mock import MagicMock
+        import torch
+        from PIL import Image
+        import detector
+
+        # 1. Test detector info helper
+        mock_model = MagicMock()
+        mock_model.names = {0: "battery", 1: "biological", 2: "cardboard", 3: "plastic"}
+        mock_model.model_name = "yolov8n-waste-12cls-best.pt"
+        info = detector.get_detector_info(mock_model)
+        self.assertTrue(info["loaded"])
+        self.assertTrue(info["is_waste_model"])
+        self.assertEqual(info["total_classes"], 4)
+        self.assertIn("plastic", info["classes"])
+
+        # 2. Test classify_objects with class passthrough
+        img = Image.new("RGB", (200, 200), color="white")
+        mock_box_data = MagicMock()
+        mock_box_data.__len__.return_value = 2
+        mock_box_data.xyxy = torch.tensor([[10.0, 10.0, 60.0, 80.0], [90.0, 20.0, 160.0, 120.0]])
+        mock_box_data.conf = torch.tensor([0.92, 0.84])
+        mock_box_data.cls = torch.tensor([3.0, 2.0])  # class 3 is plastic, class 2 is cardboard
+        mock_result = MagicMock()
+        mock_result.boxes = mock_box_data
+        mock_model.predict.return_value = [mock_result]
+
+        mock_classifier = MagicMock()
+        def mock_classify(crop, candidate_labels):
+            return [{"label": candidate_labels[0], "score": 0.88}]
+        mock_classifier.side_effect = mock_classify
+
+        results, is_fallback = detector.classify_objects(
+            img,
+            classifier=mock_classifier,
+            candidate_labels=["plastic bottle", "cardboard box"],
+            detector_model=mock_model,
+            multi_object_enabled=True,
+        )
+        self.assertFalse(is_fallback)
+        self.assertEqual(len(results), 2)
+        # Check object 1 (plastic)
+        self.assertEqual(results[0]["yolo_class"], "plastic")
+        self.assertEqual(results[0]["canonical_bin"], "Plastic")
+        # Check object 2 (cardboard)
+        self.assertEqual(results[1]["yolo_class"], "cardboard")
+        self.assertEqual(results[1]["canonical_bin"], "Paper")
+
     def test_downstream_recording_once_per_object(self):
         import rewa_logic
         # Simulate two objects from the same photo

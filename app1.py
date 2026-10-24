@@ -2945,7 +2945,12 @@ def render_result(item, number, total, bin_status):
 
         with verdict_col:
             if item.get("is_multi_object") and item.get("detector_conf") is not None:
-                st.caption(f"🎯 **YOLO detector score:** `{item['detector_conf']:.0%}` (Object #{item.get('object_index', number)})")
+                yolo_cls = item.get("yolo_class")
+                yolo_tag = f" ({yolo_cls.title()})" if yolo_cls else ""
+                st.caption(
+                    f"🎯 **YOLO detector score:** `{item['detector_conf']:.0%}`"
+                    f"{yolo_tag} (Object #{item.get('object_index', number)})"
+                )
 
             if best_score < 0.55:
                 st.warning(
@@ -3496,6 +3501,8 @@ with result_row:
                                     "best_label": det["best_label"],
                                     "best_score": det["best_score"],
                                     "detector_conf": det.get("detector_conf", 1.0),
+                                "yolo_class": det.get("yolo_class", ""),
+                                    "yolo_class": det.get("yolo_class", ""),
                                     "infer_time_ms": infer_time_ms,
                                     "fingerprint": hashlib.md5(
                                         det["crop"].tobytes() + f"{item['name']}_{obj_idx}".encode()
@@ -3519,6 +3526,7 @@ with result_row:
                                 "best_label": det["best_label"],
                                 "best_score": det["best_score"],
                                 "detector_conf": det.get("detector_conf", 1.0),
+                                "yolo_class": det.get("yolo_class", ""),
                                 "infer_time_ms": infer_time_ms,
                                 "fingerprint": hashlib.md5(
                                     item["image"].tobytes()
