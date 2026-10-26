@@ -24,7 +24,6 @@ Take or upload a photo of a waste item. The app uses zero-shot vision AI (CLIP) 
 | Feature | Description |
 |---|---|
 | 📷 **Photo Classification** | Upload photos, take live pictures with a webcam, or click "Try a sample photo". CLIP evaluates images across 22 candidate labels. |
-| 🔍 **Multi-Object Detection** | Pre-trained YOLOv8 waste detection model (`kendrickfff/waste-classification-yolov8-ken`, CC-BY-4.0) with 12 waste classes (`battery`, `biological`, `brown-glass`, `cardboard`, `clothes`, `green-glass`, `metal`, `paper`, `plastic`, `shoes`, `trash`, `white-glass`). Isolates individual items (e.g. plastic bottle + pouch held together) with numbered badges and runs CLIP crop refinement for fine-grained labels, bin routing, and individual Virtual Eco Points. |
 | 📍 **Bengaluru Segregation Rules** | Tailored to Bengaluru's BBMP household waste system: **Wet Waste** (green bin), **Dry Waste** (blue bag), **Sanitary Waste** (red/newspaper), **E-Waste**, and **Domestic Hazardous Waste**. Includes edge-case rules for food-soiled paper, dirty packaging, and sharps. |
 | 🌿 **ReWA AI Buddy** | AI recycling advisor powered by Google Gemini (with fallback to Groq, OpenRouter, and built-in Python heuristics) providing safe, practical preparation and reuse ideas. |
 | 🗑️ **Six Digital Twin Bins** | Plastic, Paper, Metal, Glass, Hazardous, and Biodegradable bins tracking item counts and simulated capacity. |
@@ -58,20 +57,15 @@ ReWA.AI/
 ├── auth.py                            # Supabase Auth (Email+Password) & Anonymous session isolation
 ├── bin_rules.py                       # Single source of truth for bin mappings and labels
 ├── data_base.py                       # SQLite database operations & AI correction logging
-├── detector.py                        # Pre-trained YOLO waste detector, cropping, NMS & fallback
 ├── digital_twin.py                    # Digital Twin virtual bins and capacity simulation
 ├── evaluate_model.py                  # Standalone CLIP evaluation and benchmarking script
 ├── recycling_logic.py                 # Bin decision wrappers
 ├── rewabuddy_advisor.py               # LLM recycling & reuse assistant
 ├── rewards.py                         # Eco points, daily streaks, and daily goals
 ├── rewa_logic.py                      # Validation, badges, garden, and missions logic
-├── test_rewa.py                       # Unittest test suite (48 tests)
-├── test_yolo.py                       # Standalone YOLO waste detection sanity & visual test
+├── test_rewa.py                       # Unittest test suite (37 tests)
 ├── data/
-│   ├── bengaluru_rules.json           # Bengaluru municipal waste segregation rules & sources
-│   └── yolo_class_map.json            # 12 YOLO waste classes mapped to canonical bins & CLIP labels
-├── models/
-│   └── MODEL_CARD.md                  # Model card for kendrickfff/waste-classification-yolov8-ken
+│   └── bengaluru_rules.json           # Bengaluru municipal waste segregation rules & sources
 ├── sample_images/                     # Folder for one-click demo test photos
 ├── eval_data/                         # Folder for labeled evaluation datasets (eval_data/<label>/<img.jpg>)
 └── docs/
@@ -109,17 +103,11 @@ Open `http://localhost:8501` in your browser.
 
 ## 🧪 How to Run Tests
 
-Run the complete automated test suite (checks Supabase auth, session isolation, image validation, double-reward protection, badges, missions, YOLO class mapping coverage, and detector passthrough):
+Run the complete automated test suite (checks Supabase auth, session isolation, image validation, double-reward protection, badges, missions, and bin mapping completeness):
 
 ```bash
 python test_rewa.py
 ```
-
-To run the dedicated YOLO waste detection sanity check:
-```bash
-python test_yolo.py
-```
-*(You can also pass a custom photo: `python test_yolo.py path/to/my_photo.jpg` to inspect bounding boxes and crops).*
 
 ---
 
@@ -196,9 +184,7 @@ ReWA.AI uses Supabase Auth for optional email + password accounts:
 
 ## ⚠️ Known Limitations & Honest Notes
 
-- **Multi-Object Detection vs Complex Clutter:** YOLOv8n operates with a low class-agnostic confidence threshold (~0.18) to discover arbitrary waste items. However, transparent plastic film, flat crumpled wrappers, or items with zero contrast against a busy background may occasionally be missed or merged. Users can toggle multi-object detection off in the sidebar or use the "Ignore / Remove item" button to discard false detections.
-- **YOLO-World vs Nano Detector:** Pretrained open-vocabulary YOLO-World (`yolov8s-worldv2.pt`, ~35 MB) was evaluated for zero-shot text prompting. On CPU with Streamlit Cloud's ~1 GB memory limit, YOLO-World incurs ~3-4x memory overhead and higher latency compared to the nano detector (~6 MB). The two-stage architecture therefore uses YOLOv8n as a fast object proposal generator, with CLIP handling fine-grained zero-shot classification.
-- **Cold Starts & Streamlit Sleep Screen:** Streamlit Community Cloud puts free-tier apps into sleep mode after a period of inactivity. On wake-up, downloading model weights may take 1-2 minutes on the first classification attempt.
+- **Cold Starts & Streamlit Sleep Screen:** Streamlit Community Cloud puts free-tier apps into sleep mode after a period of inactivity. On wake-up, downloading the CLIP model weights may take 1-2 minutes on the first classification attempt.
 - **Similarity Scores vs Probability:** The confidence score displayed is a normalized cosine similarity score produced by CLIP over the fixed candidate label list. It is **not** a calibrated statistical probability or an absolute guarantee of correctness.
 - **Ephemeral Storage on Cloud:** Streamlit Community Cloud instances do not have persistent SSD storage across container redeployments. SQLite database records may reset when the application restarts. Use the **"Download history (CSV/JSON)"** button to back up your recycling records.
 - **Local Rules Variation:** While ReWA.AI incorporates official Bengaluru BBMP guidelines, rules and collection schedules can vary across individual wards, RWAs, and apartment complexes. Always check local notices.
@@ -210,8 +196,5 @@ ReWA.AI uses Supabase Auth for optional email + password accounts:
 ## 👩‍💻 Authors
 Made by **Jeevan DJ and J.Jebastin Immanuvel** — *Bangalore Institute of Technology (Information Science & Engineering)*
 
-## 📄 License & Transparency
+## 📄 License
 This project is licensed under the MIT License.
-*Third-party notices:*
-- **Ultralytics YOLO:** Licensed under AGPL-3.0 (suitable for open-source / hackathon use).
-- **Pre-trained Waste Model:** Weights (`yolov8n-waste-12cls-best.pt` by `kendrickfff`) licensed under Creative Commons Attribution 4.0 International (CC-BY-4.0). Full model details are documented in [models/MODEL_CARD.md](models/MODEL_CARD.md).
