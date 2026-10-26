@@ -582,5 +582,34 @@ class SupabaseAuthTests(unittest.TestCase):
         self.assertEqual(old_count, 0)
 
 
+class ReWABuddyAdvisorTests(unittest.TestCase):
+    """Unit tests for ReWA AI Buddy Advisor."""
+
+    def test_classify_material(self):
+        import rewabuddy_advisor
+        self.assertEqual(rewabuddy_advisor.classify_material("battery"), "hazardous")
+        self.assertEqual(rewabuddy_advisor.classify_material("medicine"), "hazardous")
+        self.assertEqual(rewabuddy_advisor.classify_material("fruit peel"), "biodegradable")
+        self.assertEqual(rewabuddy_advisor.classify_material("food waste"), "biodegradable")
+        self.assertEqual(rewabuddy_advisor.classify_material("plastic bottle"), "recyclable and reusable")
+        self.assertEqual(rewabuddy_advisor.classify_material("cardboard box"), "recyclable and reusable")
+
+    def test_get_reuse_info_hazardous_safety(self):
+        import rewabuddy_advisor
+        info = rewabuddy_advisor.get_reuse_info("battery", "hazardous")
+        self.assertEqual(info["ideas"], [])
+        self.assertIsNotNone(info["reuse_line"])
+        self.assertTrue(len(info["handling"]) > 0)
+
+    def test_generate_recycling_advice_headings(self):
+        import rewabuddy_advisor
+        advice = rewabuddy_advisor.generate_recycling_advice("cardboard box", 0.90, {})
+        self.assertIn("## ♻️ Recycling Advice", advice)
+        self.assertIn("## 🗑️ Recommended Bin", advice)
+        self.assertIn("## 🔁 Reuse Ideas", advice)
+        self.assertIn("## 💡 Smart Suggestion", advice)
+        self.assertIn("Paper", advice)
+
+
 if __name__ == "__main__":
     unittest.main()

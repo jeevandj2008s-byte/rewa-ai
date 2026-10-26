@@ -1,44 +1,122 @@
+"""rewabuddy_advisor.py - ReWA AI Buddy Recycling & Reuse Advisor.
+
+Multi-provider AI assistant with automatic fallback:
+1. Google Gemini (google-genai SDK, gemini-2.5-flash / gemini-2.0-flash / gemini-1.5-flash)
+2. Groq (llama-3.3-70b-versatile / llama-3.1-8b-instant)
+3. OpenRouter (meta-llama / gemini free tiers)
+4. Offline Rule-Based Advisor (Python knowledge base; zero cost, 100% available)
+
+Features:
+- Reads API keys from environment variables AND Streamlit secrets (.streamlit/secrets.toml)
+- Handles Unicode / Windows encoding safely via Python logging
+- Deterministic material classification & bin routing decided by Python logic
+- AI explains facts without hallucinating bin levels or unsafe reuse
+- Safe handling rules for hazardous waste (no DIY reuse for batteries/chemicals)
+"""
+
+import logging
 import os
 import time
 import requests
 
-from google import genai
 from recycling_logic import decide_bin
 
+logger = logging.getLogger(__name__)
 
 # ============================================================
 # SMART RECYCLING ASSISTANT — CONFIGURATION
 # ============================================================
 
-# NOTE: Check the exact model name in Google AI Studio.
-# A wrong name makes Gemini always fail and fall back to Groq.
+# Valid, modern Google Gemini models supported by google-genai
 GEMINI_MODELS = [
-    "gemini-3.8-flash",
+    "gemini-2.5-flash",
+    "gemini-2.0-flash",
+    "gemini-1.5-flash",
+    "gemini-1.5-pro",
 ]
 
-GROQ_MODEL = "openai/gpt-oss-120b"
+# Supported models on Groq
+GROQ_MODELS = [
+    "llama-3.3-70b-versatile",
+    "llama-3.1-8b-instant",
+    "mixtral-8x7b-32768",
+    "openai/gpt-oss-120b",
+]
 
-OPENROUTER_MODEL = "openrouter/free"
+# Supported free / standard models on OpenRouter
+OPENROUTER_MODELS = [
+    "meta-llama/llama-3.2-3b-instruct:free",
+    "google/gemini-2.0-flash-exp:free",
+    "mistralai/mistral-7b-instruct:free",
+    "openrouter/free",
+]
 
 REQUEST_TIMEOUT = 30
-
 MIN_CONFIDENCE_FOR_AUTOMATIC_SORTING = 0.55
-
-# A bin at or above this simulated fill level counts as "nearly full"
-# (same threshold the dashboard uses for its red warning).
 BIN_FULL_THRESHOLD = 90
 
 
 # ============================================================
+# SECRET / API KEY RETRIEVAL (ENV + STREAMLIT SECRETS)
+# ============================================================
+
+def get_api_key(primary_name, alternates=None):
+    """
+    Retrieve an API key from environment variables or Streamlit secrets.
+    Checks:
+    1. os.getenv(primary_name) & alternates
+    2. st.secrets[primary_name] & alternates
+    3. st.secrets nested sections (e.g. st.secrets["gemini"]["api_key"])
+    """
+    # 1. Environment variables
+    val = os.getenv(primary_name)
+    if val and val.strip():
+        return val.strip()
+
+    if alternates:
+        for alt in alternates:
+            val = os.getenv(alt)
+            if val and val.strip():
+                return val.strip()
+
+    # 2. Streamlit secrets
+    try:
+        import streamlit as st
+
+        # Direct top-level check
+        if primary_name in st.secrets:
+            return str(st.secrets[primary_name]).strip()
+        if alternates:
+            for alt in alternates:
+                if alt in st.secrets:
+                    return str(st.secrets[alt]).strip()
+
+        # Section-level check
+        for _, sec_val in st.secrets.items():
+            if isinstance(sec_val, dict):
+                for k in [primary_name, primary_name.lower(), "api_key", "key", "token"]:
+                    if k in sec_val and sec_val[k]:
+                        return str(sec_val[k]).strip()
+                if alternates:
+                    for alt in alternates:
+                        if alt in sec_val and sec_val[alt]:
+                            return str(sec_val[alt]).strip()
+                        if alt.lower() in sec_val and sec_val[alt.lower()]:
+                            return str(sec_val[alt.lower()]).strip()
+    except Exception:
+        pass
+
+    return None
+
+
+# ============================================================
 # MATERIAL CLASSIFICATION (decided by Python, not by the AI)
-# Matches the problem statement: recyclable, reusable,
-# biodegradable, hazardous
 # ============================================================
 
 HAZARDOUS_KEYWORDS = [
     "battery", "e-waste", "electronic", "chemical", "bulb",
     "medicine", "paint", "aerosol", "syringe", "tube light",
-    "cfl", "pesticide", "thermometer", "toner",
+    "cfl", "pesticide", "thermometer", "toner", "biohazard",
 ]
 
 BIODEGRADABLE_KEYWORDS = [
@@ -47,14 +125,12 @@ BIODEGRADABLE_KEYWORDS = [
     "flower", "grass",
 ]
 
-# If the label mentions packaging, it is NOT organic waste
-# (e.g. "food wrapper" is packaging, not food).
-PACKAGING_WORDS = ["plastic", "wrapper", "packet", "packaging", "bottle", "can"]
+PACKAGING_WORDS = ["plastic", "wrapper", "packet", "packaging", "bottle", "can", "container"]
 
 
 def classify_material(waste_type):
     """Return 'hazardous', 'biodegradable', or 'recyclable and reusable'."""
-    label = str(waste_type).lower()
+    label = str(waste_type or "").strip().lower()
 
     if any(word in label for word in HAZARDOUS_KEYWORDS):
         return "hazardous"
@@ -68,8 +144,6 @@ def classify_material(waste_type):
 
 # ============================================================
 # BIN DECISION FOR HAZARDOUS / BIODEGRADABLE ITEMS
-# (decide_bin from recycling_logic.py still handles the
-#  plastic / paper / metal / glass items)
 # ============================================================
 
 SPECIAL_BINS = {
@@ -80,9 +154,8 @@ SPECIAL_BINS = {
 
 def decide_special_bin(material_class, confidence, bin_status):
     """Python-only bin decision for hazardous and biodegradable items."""
-    bin_name = SPECIAL_BINS[material_class]
+    bin_name = SPECIAL_BINS.get(material_class, "Hazardous")
 
-    # bin_status keys are lowercase ("hazardous"), but be tolerant
     status_lookup = {
         str(key).lower(): value
         for key, value in (bin_status or {}).items()
@@ -98,7 +171,7 @@ def decide_special_bin(material_class, confidence, bin_status):
     if material_class == "hazardous":
         note = (
             "Hazardous items need special handling. Keep them "
-            "separate from ordinary waste and recycling."
+            "separate from ordinary waste and dry recyclables."
         )
     else:
         note = (
@@ -116,65 +189,62 @@ def decide_special_bin(material_class, confidence, bin_status):
 
 
 # ============================================================
-# REUSE KNOWLEDGE BASE (written by us, so the AI never has to
-# invent reuse or safety advice on its own)
+# REUSE KNOWLEDGE BASE
 # ============================================================
 
-# --- Recyclable materials: 3 safe, cheap reuse ideas per item ---
 ITEM_REUSE = {
     "plastic bottle": [
         "Cut the bottle and use the bottom half as a pen stand or a small planter.",
-        "Poke holes in the cap and use it as a watering can for plants.",
-        "Use a clean bottle to store dry items such as rice, pulses or loose stationery.",
+        "Poke holes in the cap and use it as a gentle watering can for plants.",
+        "Use a thoroughly cleaned bottle to store dry items like pulses, seeds, or stationery.",
     ],
     "plastic bag": [
-        "Reuse it as a bin liner for small dustbins.",
-        "Carry it again for groceries or keep it in your bag for wet clothes.",
-        "Use it to protect books or shoes inside your backpack on rainy days.",
+        "Reuse it as a bin liner for small bedroom or bathroom dustbins.",
+        "Keep it folded in your backpack for wet umbrellas or grocery runs.",
+        "Use it to protect books or electronics from unexpected rain.",
     ],
     "plastic wrapper": [
-        "Cut clean wrappers into strips for craft projects or collages.",
-        "Use a clean wrapper to wrap small items when packing a parcel.",
-        "Collect clean wrappers for school or college art projects.",
+        "Cut clean wrappers into strips for craft, collage, or weaving projects.",
+        "Use clean bubble wrap or plastic film as cushioning when packing parcels.",
+        "Collect clean wrappers for municipal dry waste co-processing / DWCC drop-off.",
     ],
     "plastic container": [
-        "Wash it well and use it to store snacks, screws, buttons or stationery.",
-        "Use it as a tray under a plant pot.",
-        "Use it as a drawer organiser for small items.",
+        "Wash well and use to organise screws, buttons, craft supplies, or cables.",
+        "Use as a drip tray under plant pots to protect window sills.",
+        "Use as drawer dividers to organise loose office stationery.",
     ],
     "cardboard box": [
-        "Flatten it and reuse it for packing, or keep it for moving house.",
-        "Cut it into drawer dividers or a desk organiser.",
-        "Use it as a base for crafts, models or a college project.",
+        "Flatten and store for moving, shipping, or storage.",
+        "Cut into drawer dividers or a DIY desk organiser.",
+        "Use as a protective surface when painting or working on craft projects.",
     ],
     "paper sheet": [
-        "Use the blank side for rough work or notes.",
-        "Cut clean sheets into small notepads or sticky-note style pads.",
-        "Use it for origami, paper crafts or gift wrapping.",
+        "Use the reverse blank side for rough math, notes, or drafts.",
+        "Cut clean unused sections into pocket notepads or bookmarks.",
+        "Shred clean unbleached paper for compost brown matter or parcel packing.",
     ],
     "newspaper": [
-        "Use it to wrap fragile items or gifts.",
-        "Use it to line drawers or shelves.",
-        "Crumple it to clean glass and mirrors, or use it to cover surfaces while painting.",
+        "Use to wrap fragile glass items, gifts, or parcel contents.",
+        "Line kitchen drawers, shoe racks, or pet trays.",
+        "Crumple with a drop of vinegar to clean glass and mirrors streak-free.",
     ],
     "metal can": [
-        "Wash it, cover any sharp edge with tape, and use it as a pen holder.",
-        "Use it as a small planter after making drainage holes carefully.",
-        "Decorate it and use it as a desk organiser for small tools.",
+        "Wash thoroughly, sand down or tape sharp rims, and use as a pencil holder.",
+        "Drill small drainage holes in the bottom and paint as a rustic planter.",
+        "Organise paintbrushes, kitchen utensils, or workshop tools.",
     ],
     "glass bottle": [
-        "Wash it and use it as a water bottle for the fridge or a flower vase.",
-        "Use it to store homemade items like pickles or juice, only if it is properly cleaned.",
-        "Decorate it as a lamp base or a desk decoration.",
+        "Wash and sterilise to use as a fridge water bottle or flower vase.",
+        "Fill with fairy lights or sand to make an ambient desk ornament.",
+        "Reuse for homemade cold-brew, iced tea, or decorative storage.",
     ],
     "glass jar": [
-        "Wash it and use it to store spices, pulses or snacks.",
-        "Use it as a pen holder or a small planter for succulents.",
-        "Use it as a candle holder or decoration.",
+        "Wash and reuse to store spices, homemade jam, overnight oats, or pulses.",
+        "Use as a chic desk organiser for pens, scissors, and paperclips.",
+        "Place a small tea-light candle inside for an ambient lantern.",
     ],
 }
 
-# --- Fallback by material keyword when the exact label is unknown ---
 CATEGORY_REUSE = [
     (["plastic"], ITEM_REUSE["plastic container"]),
     (["cardboard", "carton", "box"], ITEM_REUSE["cardboard box"]),
@@ -184,104 +254,91 @@ CATEGORY_REUSE = [
 ]
 
 GENERIC_REUSE = [
-    "Check whether the item can be reused for storage or as a container.",
-    "Donate it if it is still in good condition.",
-    "Repurpose it for a craft or college project before discarding.",
+    "Check whether the item can be cleaned and repurposed for storage or containment.",
+    "Donate it if it remains intact and in usable condition.",
+    "Repurpose it for a DIY craft or college project before final disposal.",
 ]
 
-# --- Biodegradable items: composting and soil-friendly ideas ---
 BIODEGRADABLE_REUSE = {
     "food waste": [
-        "Add vegetable and fruit scraps to a home compost pit or a compost bin.",
-        "Try a small kitchen compost bucket if you live in a hostel or flat.",
-        "Take it to a community compost point if your area has one. Do not mix it with plastic.",
+        "Add fruit and vegetable trimmings to a home compost bucket or community compost pit.",
+        "Use a small kitchen bokashi bin or terracotta composter if living in an apartment.",
+        "Hand over to municipal wet waste collectors separately; never mix with plastics.",
     ],
     "fruit peel": [
-        "Chop banana or fruit peels and bury them in plant soil to enrich it.",
-        "Make an eco-enzyme cleaner by fermenting fruit peels with jaggery and water.",
-        "Add the peels to a compost bin or bucket.",
+        "Bury citrus or banana peels under plant soil to add potassium and organic nutrients.",
+        "Ferment citrus peels with jaggery and water to produce a natural eco-enzyme cleaner.",
+        "Add peels to a compost bucket to enrich organic compost matter.",
     ],
     "leaves": [
-        "Use dry leaves as mulch around plants to keep the soil moist.",
-        "Add dry leaves to a compost pile to balance wet kitchen waste.",
-        "Use clean dry leaves for pressed-leaf art or crafts.",
+        "Use dry leaves as mulch around potted plants to retain soil moisture.",
+        "Add dry leaves as 'brown' carbon matter to balance nitrogen-rich kitchen waste in compost.",
+        "Use clean dried leaves for craft, art projects, or garden bed bedding.",
     ],
 }
 
 BIODEGRADABLE_DEFAULT = [
-    "Compost it at home or in a community compost bin.",
-    "Bury small amounts in plant soil so they break down naturally.",
-    "Keep it separate from plastic, metal and other dry waste.",
+    "Compost in a home compost bin, garden compost pit, or community wet waste facility.",
+    "Bury small organic scraps in plant soil so they decompose naturally.",
+    "Keep strictly separated from plastic, metal, and dry recyclables.",
 ]
 
-# --- Hazardous items: NO DIY reuse, only safe handling ---
 HAZARDOUS_GUIDE = {
     "battery": {
         "reuse_line": (
-            "Do not reuse or open used batteries. Switching to rechargeable "
-            "batteries in future reduces battery waste."
+            "⚠️ Do not reuse or open spent batteries. Switch to rechargeable "
+            "batteries to significantly reduce hazardous chemical waste."
         ),
         "handling": [
-            "Never throw batteries in the normal dustbin or in a fire.",
-            "Tape the ends of button or lithium cells and keep them dry.",
-            "If a battery is swollen, leaking or hot, do not charge or puncture it. "
-            "Place it in a non-metal container and take it to a collection point.",
+            "Never throw batteries in ordinary dustbins or incinerate them.",
+            "Cover terminal ends of lithium or button cells with insulating tape to prevent short circuits.",
+            "If a battery is swollen or leaking, handle with gloves and deposit at a designated E-waste drop-off.",
         ],
     },
     "light bulb": {
         "reuse_line": (
-            "Do not reuse a damaged or used bulb. A working bulb can be used "
-            "in another fitting."
+            "⚠️ Do not attempt DIY crafts with damaged or expired bulbs. "
+            "Intact working bulbs may be repurposed into other fixtures."
         ),
         "handling": [
-            "CFL and tube lights contain mercury, so do not put them in normal waste.",
-            "Wrap an intact bulb in paper or its box before taking it to a collection point.",
-            "If one breaks, ventilate the room and pick up pieces with cardboard "
-            "and gloves. Do not use a vacuum cleaner.",
+            "CFLs and fluorescent tubes contain mercury vapour — never discard in general trash.",
+            "Wrap unbroken bulbs in paper or original packaging before transporting to hazardous disposal.",
+            "If broken, ventilate the room for 15 minutes and pick up fragments with stiff paper; do not vacuum.",
         ],
     },
     "medicine": {
         "reuse_line": (
-            "Do not reuse or share leftover or expired medicines. Return them "
-            "through a take-back option."
+            "⚠️ Never reuse or share expired or leftover medicines. "
+            "Return them via pharmacy take-back channels."
         ),
         "handling": [
-            "Return unused or expired medicines to a pharmacy or take-back point.",
-            "Do not flush medicines unless the label specifically says so.",
-            "Keep them in the original packaging, away from children and pets, "
-            "until you dispose of them.",
+            "Return unneeded medications to authorized pharmacy take-back collection boxes.",
+            "Do not flush medications down the sink or toilet unless explicitly instructed on packaging.",
+            "Keep in original child-resistant containers until safely deposited at hazardous drop-offs.",
         ],
     },
     "default": {
         "reuse_line": (
-            "This item is hazardous, so do not try to reuse it yourself. "
-            "Take it to a special collection point."
+            "⚠️ This is hazardous waste — do not attempt DIY reuse. "
+            "Deposit at an authorized hazardous or E-waste collection point."
         ),
         "handling": [
-            "Keep it separate from ordinary waste and recycling.",
-            "Use an authorised hazardous-waste or e-waste collection point.",
-            "Keep it in its original container and away from heat, children and pets.",
+            "Keep strictly isolated from household dry recyclables and wet compost.",
+            "Use authorized domestic hazardous waste collection centres or e-waste kiosks.",
+            "Keep in original containers away from heat sources, children, and pets.",
         ],
     },
 }
 
 
 def get_reuse_info(waste_type, material_class):
-    """
-    Return reuse ideas and safety tips picked by Python.
-
-    {
-        "ideas":    [...],  # reuse / composting ideas (empty for hazardous)
-        "reuse_line": str or None,  # short line for hazardous items
-        "handling": [...],  # safe-handling tips (hazardous only)
-    }
-    """
-    label = str(waste_type).strip().lower()
+    """Return reuse suggestions and safe handling instructions."""
+    label = str(waste_type or "").strip().lower()
 
     if material_class == "hazardous":
         guide = HAZARDOUS_GUIDE["default"]
         for key in ("battery", "light bulb", "medicine"):
-            if key.split()[-1] in label:
+            if key in label or key.split()[-1] in label:
                 guide = HAZARDOUS_GUIDE[key]
                 break
         if "tube" in label or "cfl" in label:
@@ -319,18 +376,24 @@ def get_reuse_info(waste_type, material_class):
 
 
 # ============================================================
-# PROVIDER 1 — GEMINI
+# PROVIDER 1 — GOOGLE GEMINI
 # ============================================================
 
 def try_gemini(prompt):
-    api_key = os.getenv("GEMINI_API_KEY")
-
+    api_key = get_api_key(
+        "GEMINI_API_KEY",
+        alternates=["GOOGLE_API_KEY", "GOOGLE_GENAI_API_KEY"]
+    )
     if not api_key:
-        raise RuntimeError("GEMINI_API_KEY is not set.")
+        raise RuntimeError("GEMINI_API_KEY is not configured.")
 
-    client = genai.Client(api_key=api_key)
+    try:
+        from google import genai
+        client = genai.Client(api_key=api_key)
+    except Exception as exc:
+        raise RuntimeError(f"Could not initialize Google GenAI client: {exc}")
+
     last_error = None
-
     for model in GEMINI_MODELS:
         for attempt in range(2):
             try:
@@ -338,57 +401,41 @@ def try_gemini(prompt):
                     model=model,
                     contents=prompt,
                 )
-
-                if not response.text:
-                    raise RuntimeError(
-                        "Gemini returned an empty response."
-                    )
-
-                return response.text, f"Gemini ({model})"
-
+                if not response or not response.text:
+                    raise RuntimeError("Gemini returned an empty response.")
+                return response.text.strip(), f"Google Gemini ({model})"
             except Exception as error:
                 last_error = error
-
-                # Retry temporary server errors once.
-                error_text = str(error)
-
-                temporary_error = any(
-                    code in error_text
-                    for code in ["429", "500", "502", "503", "504"]
-                )
-
+                err_str = str(error)
+                # If model is not found, immediately try next model
+                if "404" in err_str or "not found" in err_str.lower():
+                    break
+                temporary_error = any(code in err_str for code in ["429", "500", "502", "503", "504"])
                 if temporary_error and attempt == 0:
                     time.sleep(2)
                     continue
-
                 break
 
     raise RuntimeError(f"Gemini failed: {last_error}")
 
 
 # ============================================================
-# SHARED OPENAI-COMPATIBLE API CALL
-# Used by Groq and OpenRouter
+# SHARED OPENAI-COMPATIBLE API CALL (GROQ & OPENROUTER)
 # ============================================================
 
-def call_openai_style(url, key_env, model, prompt, label):
-    api_key = os.getenv(key_env)
-
+def call_openai_style(url, api_key, model, prompt, label):
     if not api_key:
-        raise RuntimeError(f"{key_env} is not set.")
-
+        raise RuntimeError(f"{label} API key is not configured.")
     if not model:
-        raise RuntimeError(f"{label} model is not configured.")
+        raise RuntimeError(f"{label} model is not specified.")
 
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
-
-    # OpenRouter supports these optional headers.
     if "openrouter.ai" in url:
-        headers["HTTP-Referer"] = "http://localhost:8051"
-        headers["X-Title"] = "EcoSort AI"
+        headers["HTTP-Referer"] = "https://rewa-ai.streamlit.app"
+        headers["X-Title"] = "ReWA.AI"
 
     payload = {
         "model": model,
@@ -396,11 +443,11 @@ def call_openai_style(url, key_env, model, prompt, label):
             {
                 "role": "system",
                 "content": (
-                    "You are EcoSort AI, a careful recycling and "
-                    "reuse assistant. "
-                    "Use only the facts supplied in the prompt. "
-                    "Never invent bin levels, measurements, or facts. "
-                    "Explain uncertainty clearly."
+                    "You are ReWA AI Buddy, a practical, encouraging recycling and "
+                    "reuse advisor for ReWA.AI. "
+                    "Use strictly the verified facts supplied in the prompt. "
+                    "Never invent measurements, fill levels, or sensor readings. "
+                    "Explain uncertainty clearly and provide safe, actionable advice."
                 ),
             },
             {
@@ -417,24 +464,16 @@ def call_openai_style(url, key_env, model, prompt, label):
         json=payload,
         timeout=REQUEST_TIMEOUT,
     )
-
     response.raise_for_status()
-
     data = response.json()
 
     try:
         answer = data["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError) as error:
-        raise RuntimeError(
-            f"{label} returned an unexpected response."
-        ) from error
+        raise RuntimeError(f"{label} returned an unexpected response format.") from error
 
     if isinstance(answer, list):
-        answer = "\n".join(
-            part.get("text", "")
-            for part in answer
-            if isinstance(part, dict)
-        )
+        answer = "\n".join(part.get("text", "") for part in answer if isinstance(part, dict))
 
     if not isinstance(answer, str) or not answer.strip():
         raise RuntimeError(f"{label} returned an empty response.")
@@ -447,13 +486,25 @@ def call_openai_style(url, key_env, model, prompt, label):
 # ============================================================
 
 def try_groq(prompt):
-    return call_openai_style(
-        url="https://api.groq.com/openai/v1/chat/completions",
-        key_env="GROQ_API_KEY",
-        model=GROQ_MODEL,
-        prompt=prompt,
-        label="Groq",
-    )
+    api_key = get_api_key("GROQ_API_KEY")
+    if not api_key:
+        raise RuntimeError("GROQ_API_KEY is not configured.")
+
+    last_error = None
+    for model in GROQ_MODELS:
+        try:
+            return call_openai_style(
+                url="https://api.groq.com/openai/v1/chat/completions",
+                api_key=api_key,
+                model=model,
+                prompt=prompt,
+                label="Groq",
+            )
+        except Exception as error:
+            last_error = error
+            continue
+
+    raise RuntimeError(f"Groq failed: {last_error}")
 
 
 # ============================================================
@@ -461,23 +512,33 @@ def try_groq(prompt):
 # ============================================================
 
 def try_openrouter(prompt):
-    return call_openai_style(
-        url="https://openrouter.ai/api/v1/chat/completions",
-        key_env="OPENROUTER_API_KEY",
-        model=OPENROUTER_MODEL,
-        prompt=prompt,
-        label="OpenRouter",
-    )
+    api_key = get_api_key("OPENROUTER_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENROUTER_API_KEY is not configured.")
+
+    last_error = None
+    for model in OPENROUTER_MODELS:
+        try:
+            return call_openai_style(
+                url="https://openrouter.ai/api/v1/chat/completions",
+                api_key=api_key,
+                model=model,
+                prompt=prompt,
+                label="OpenRouter",
+            )
+        except Exception as error:
+            last_error = error
+            continue
+
+    raise RuntimeError(f"OpenRouter failed: {last_error}")
 
 
 # ============================================================
 # AI PROVIDER FALLBACK
-# Gemini → Groq → OpenRouter
 # ============================================================
 
 def ask_ai(prompt):
     errors = []
-
     providers = [
         try_gemini,
         try_groq,
@@ -487,33 +548,18 @@ def ask_ai(prompt):
     for provider in providers:
         try:
             answer, source = provider(prompt)
-
-            print(f"EcoSort AI response generated by {source}")
-
+            logger.info("ReWA AI Buddy advice generated via %s", source)
             return answer, source
-
         except Exception as error:
             message = str(error)
+            logger.info("%s failed: %s", provider.__name__, message[:200])
+            errors.append(f"{provider.__name__}: {message[:200]}")
 
-            # Avoid printing API keys or request headers.
-            print(
-                f"{provider.__name__} failed: "
-                f"{message[:250]}"
-            )
-
-            errors.append(
-                f"{provider.__name__}: {message[:250]}"
-            )
-
-    raise RuntimeError(
-        "All configured AI providers failed. "
-        + " | ".join(errors)
-    )
+    raise RuntimeError("All configured AI providers failed. " + " | ".join(errors))
 
 
 # ============================================================
-# PYTHON-ONLY FALLBACK
-# Used when all AI providers fail
+# PYTHON-ONLY FALLBACK (OFFLINE INTELLIGENCE)
 # ============================================================
 
 def offline_advice(waste_type, decision, material_class="recyclable and reusable"):
@@ -521,13 +567,12 @@ def offline_advice(waste_type, decision, material_class="recyclable and reusable
 
     lines = [
         "## ♻️ Recycling Advice",
-        f"Detected item: **{waste_type}** (class: {material_class}).",
+        f"Detected item: **{waste_type}** (material category: *{material_class}*).",
     ]
 
     if decision.get("needs_verification", True):
         lines.append(
-            "Please verify the material before deciding "
-            "which bin to use."
+            "⚠️ *Please verify the physical material markings before final bin disposal.*"
         )
 
     if decision.get("note"):
@@ -536,45 +581,29 @@ def offline_advice(waste_type, decision, material_class="recyclable and reusable
     lines.append("## 🗑️ Recommended Bin")
 
     bin_name = decision.get("bin")
-
     if bin_name is None:
-        lines.append(
-            "No matching bin is available in this system."
-        )
+        lines.append("No matching canonical bin is available in this station. Consult municipal guidelines.")
     else:
         fill = decision.get("fill_percent")
-
         if fill is None:
-            lines.append(
-                f"The suggested bin is **{bin_name}**."
-            )
+            lines.append(f"The suggested bin is **{bin_name}**.")
         else:
-            lines.append(
-                f"The suggested bin is **{bin_name}** "
-                f"(simulated fill: {fill}%)."
-            )
+            lines.append(f"The suggested bin is **{bin_name}** (simulated fill: {fill}%).")
 
         if decision.get("is_full"):
-            lines.append(
-                "This bin is nearly full. Consider another "
-                "appropriate collection point or report it."
-            )
+            lines.append("⚠️ *This bin is nearly full (≥90%). Consider an alternative collection point or DWCC.*")
 
-    # Reuse section depends on the material class.
     lines.append("## 🔁 Reuse Ideas")
 
     if material_class == "hazardous":
         lines.append(reuse_info["reuse_line"])
     elif material_class == "biodegradable":
         lines.append(
-            "This item is biodegradable. Compost it instead of "
-            "throwing it away.\n"
+            "This item is biodegradable. Compost it instead of discarding:\n"
             + "\n".join(f"- {idea}" for idea in reuse_info["ideas"])
         )
     else:
-        lines.append(
-            "\n".join(f"- {idea}" for idea in reuse_info["ideas"])
-        )
+        lines.append("\n".join(f"- {idea}" for idea in reuse_info["ideas"]))
 
     lines.append("## 💡 Smart Suggestion")
 
@@ -582,9 +611,9 @@ def offline_advice(waste_type, decision, material_class="recyclable and reusable
         tips = reuse_info["handling"]
     else:
         tips = [
-            "Check the item's material marking.",
-            "Keep recyclable materials clean when required.",
-            "Follow your local recycling rules.",
+            "Check the item's material markings or resin identification code.",
+            "Keep recyclable materials clean, dry, and emptied before binning.",
+            "Follow your local ward (BBMP) collection schedules.",
         ]
 
     lines.append("\n".join(f"- {tip}" for tip in tips))
@@ -593,14 +622,7 @@ def offline_advice(waste_type, decision, material_class="recyclable and reusable
 
 
 # ============================================================
-# MAIN RECYCLING ADVISOR
-# Compatible with the CURRENT app1.py call:
-#
-# generate_recycling_advice(
-#     waste_type=best_label,
-#     confidence=best_score,
-#     bin_status=bin_status
-# )
+# MAIN RECYCLING ADVISOR INTERFACE
 # ============================================================
 
 def generate_recycling_advice(
@@ -611,118 +633,77 @@ def generate_recycling_advice(
     bins=None,
 ):
     """
-    Generate recycling AND reuse advice using AI providers
-    with a Python-only fallback.
-
-    Supports both calling styles:
-
-    1. Current app1.py:
-       waste_type, confidence, bin_status
-
-    2. Earlier advisor interface:
-       waste_type, score, bins
+    Generate recycling AND reuse advice using AI cloud providers
+    with an automatic Python-only fallback.
+    Never throws unhandled exceptions to the caller.
     """
-
-    # Support the older argument names as well.
-    if score is not None:
-        confidence = score
-
-    if bins is not None:
-        bin_status = bins
-
-    if confidence is None:
-        confidence = 0.0
-
-    if bin_status is None:
-        bin_status = {}
-
-    # The CLIP score is a similarity score, not a
-    # calibrated probability of correctness.
     try:
-        confidence = float(confidence)
-    except (TypeError, ValueError):
-        confidence = 0.0
+        # Support legacy argument aliases
+        if score is not None:
+            confidence = score
+        if bins is not None:
+            bin_status = bins
+        if confidence is None:
+            confidence = 0.0
+        if bin_status is None:
+            bin_status = {}
 
-    confidence = max(0.0, min(confidence, 1.0))
+        try:
+            confidence = float(confidence)
+        except (TypeError, ValueError):
+            confidence = 0.0
+        confidence = max(0.0, min(confidence, 1.0))
 
-    # Python decides the material class; the AI only explains it.
-    material_class = classify_material(waste_type)
+        # 1. Deterministic Python material classification
+        material_class = classify_material(waste_type)
 
-    # Python selects the bin.
-    if material_class in SPECIAL_BINS:
-        decision = decide_special_bin(
-            material_class,
-            confidence,
-            bin_status,
-        )
-    else:
-        decision = decide_bin(
-            waste_type,
-            confidence,
-            bin_status,
-        )
+        # 2. Deterministic Python bin routing
+        if material_class in SPECIAL_BINS:
+            decision = decide_special_bin(material_class, confidence, bin_status)
+        else:
+            decision = decide_bin(waste_type, confidence, bin_status)
 
-    # Python also selects the reuse ideas / safety tips.
-    reuse_info = get_reuse_info(waste_type, material_class)
+        # 3. Deterministic reuse suggestions and safety guidelines
+        reuse_info = get_reuse_info(waste_type, material_class)
 
-    if material_class == "hazardous":
-        reuse_block = (
-            "- Reuse line (hazardous, no DIY reuse): "
-            f"{reuse_info['reuse_line']}\n"
-            "- Safe handling tips:\n"
-            + "\n".join(f"  * {tip}" for tip in reuse_info["handling"])
-        )
-    else:
-        reuse_block = "\n".join(
-            f"- {idea}" for idea in reuse_info["ideas"]
-        )
+        if material_class == "hazardous":
+            reuse_block = (
+                f"- Safety Notice: {reuse_info['reuse_line']}\n"
+                "- Safe handling tips:\n"
+                + "\n".join(f"  * {tip}" for tip in reuse_info["handling"])
+            )
+        else:
+            reuse_block = "\n".join(f"- {idea}" for idea in reuse_info["ideas"])
 
-    prompt = f"""
-You are EcoSort AI, a friendly recycling and reuse assistant
-for first-year college students.
+        prompt = f"""
+You are ReWA AI Buddy, a practical, encouraging recycling and reuse advisor for ReWA.AI.
 
-Explain the following checked facts in simple English.
+Explain the following verified facts in clear, student-friendly English.
 
-FACTS FROM PYTHON:
-- Detected image label: {waste_type}
-- Material class: {material_class}
-- CLIP similarity score: {confidence:.3f}
-- This score is NOT a calibrated probability.
+VERIFIED SYSTEM FACTS:
+- Detected item label: {waste_type}
+- Material category: {material_class}
+- Vision similarity score: {confidence:.3f} (Note: This is an image similarity score, not a guaranteed probability)
 - Suggested bin: {decision.get("bin")}
-- Bin fill level: {decision.get("fill_percent")}
-- Bin readings are simulated, not measured by real sensors.
+- Bin fill level: {decision.get("fill_percent")} (simulated in Digital Twin, not physical hardware sensors)
 - Bin is nearly full: {decision.get("is_full")}
 - Material verification needed: {decision.get("needs_verification")}
 - Additional note: {decision.get("note")}
 
-REUSE / SAFETY INFORMATION FROM PYTHON:
+REUSE & SAFETY GUIDELINES:
 {reuse_block}
 
-RULES:
-1. Do not claim the image classification is certainly correct.
-2. If verification is needed, tell the user to check the material.
-3. Use only the facts provided above.
-4. Never invent a bin level or sensor reading.
-5. If a value is unavailable, say that it is unavailable.
-6. If the suggested bin is nearly full, recommend reporting it
-   or finding another appropriate collection point.
-7. Mention that recycling rules vary by location.
-8. Give practical advice suitable for a college student.
-9. Do not change the bin selected by Python.
-10. Under Reuse Ideas, use the ideas supplied by Python above.
-    You may reword them in simple English, but do not add
-    unsafe, expensive or tool-heavy ideas.
-11. Reuse ideas must be safe, cheap, and doable by a college
-    student with no special tools.
-12. If the material class is hazardous (battery, e-waste, bulbs,
-    medicine, chemicals), do NOT suggest DIY reuse. Under Reuse
-    Ideas write only the one short reuse line supplied by Python,
-    and use the safe handling tips for Smart Suggestion.
-13. If the material class is biodegradable (food, leaves, peels),
-    present the composting ideas supplied by Python as the reuse
-    ideas.
+INSTRUCTIONS:
+1. Do not claim the vision classification is 100% infallible.
+2. If verification is needed, advise checking material markings or labels.
+3. Strictly adhere to the verified system facts above. Never invent fake sensor numbers.
+4. If a value is unavailable, clearly mention that it is unavailable.
+5. If the suggested bin is nearly full, recommend finding another collection point or reporting it.
+6. Mention that municipal recycling guidelines can vary by ward or locality.
+7. Under Reuse Ideas, provide safe, creative, doable reuse or composting suggestions based on the ideas above.
+8. For hazardous items (batteries, bulbs, medicines, e-waste, chemicals), NEVER suggest DIY craft reuse. Provide safe handling and authorized disposal guidance.
 
-Use exactly these four headings:
+Use exactly these four Markdown headings:
 
 ## ♻️ Recycling Advice
 
@@ -732,30 +713,35 @@ Use exactly these four headings:
 
 ## 💡 Smart Suggestion
 
-Under Reuse Ideas, give exactly three short ideas
-(except for hazardous items, see rule 12).
-Under Smart Suggestion, provide exactly three short tips.
+Under Reuse Ideas, provide 3 concise bullet points (or safe handling for hazardous waste).
+Under Smart Suggestion, provide 3 practical tips.
 """
 
-    try:
-        answer, source = ask_ai(prompt)
+        try:
+            answer, source = ask_ai(prompt)
+            return f"{answer}\n\n*Answered by: {source}*"
+        except Exception as ai_err:
+            logger.info("AI cloud providers unavailable (%s); using offline intelligence.", ai_err)
+            return (
+                offline_advice(waste_type, decision, material_class)
+                + "\n\n*Answered by: ReWA AI Buddy (Built-in Knowledge Base)*"
+            )
 
+    except Exception as fatal_error:
+        logger.error("Error in generate_recycling_advice: %s", fatal_error)
+        clean_name = str(waste_type or "Item").title()
         return (
-            f"{answer}\n\n"
-            f"*Answered by: {source}*"
-        )
-
-    except Exception as error:
-        print(
-            "All AI providers failed; using Python fallback:",
-            str(error)[:300],
-        )
-
-        return (
-            offline_advice(waste_type, decision, material_class)
-            + "\n\n"
-            "*AI providers are unavailable. "
-            "This answer was generated using Python rules.*"
+            f"## ♻️ Recycling Advice\n\n"
+            f"Detected item: **{clean_name}**.\n\n"
+            f"## 🗑️ Recommended Bin\n\n"
+            f"Please check municipal segregation rules or verify the item's material markings.\n\n"
+            f"## 🔁 Reuse Ideas\n\n"
+            f"- Clean and reuse for storage or containers if intact.\n"
+            f"- Donate if still in working or usable condition.\n\n"
+            f"## 💡 Smart Suggestion\n\n"
+            f"- Rinse and dry recyclables before placing them in the bin.\n"
+            f"- Check local ward (BBMP) collection schedules.\n\n"
+            f"*Answered by: ReWA AI Buddy (Safety Fallback)*"
         )
 
 
@@ -776,10 +762,4 @@ if __name__ == "__main__":
     for item in ["plastic bottle", "battery", "fruit peel"]:
         print("=" * 60)
         print(item)
-        print(
-            generate_recycling_advice(
-                waste_type=item,
-                confidence=0.87,
-                bin_status=test_bins,
-            )
-        )
+        print(generate_recycling_advice(waste_type=item, confidence=0.87, bin_status=test_bins))
