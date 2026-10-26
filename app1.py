@@ -2140,10 +2140,10 @@ THEME_CSS += """
 NAV_HTML = (
     '<div class="topnav" role="navigation" aria-label="Page sections">'
     '<a class="brand" href="#top"><span class="ic">♻️</span><span class="tx">ReWA.AI</span></a>'
+    '<a href="#rewards"><span class="ic">🏆</span><span class="tx">Rewards</span></a>'
     '<a href="#upload"><span class="ic">📷</span><span class="tx">Classify</span></a>'
     '<a href="#station"><span class="ic">♻️</span><span class="tx">Station</span></a>'
     '<a href="#performance"><span class="ic">📈</span><span class="tx">Eval</span></a>'
-    '<a href="#rewards"><span class="ic">🏆</span><span class="tx">Rewards</span></a>'
     '<a href="#analytics"><span class="ic">📊</span><span class="tx">Analytics</span></a>'
     '<a href="#bins"><span class="ic">🏭</span><span class="tx">Bins</span></a>'
     '</div>'
@@ -3232,6 +3232,160 @@ else:
             rebuild_bins_from_database()
             st.rerun()
 
+# ---------- ECO REWARDS ----------
+if st.session_state.pending_rewards:
+    rewa_logic.retry_pending_rewards(
+        st.session_state.pending_rewards, _award_in_database
+    )
+
+rewards = get_summary()
+
+st.markdown("---")
+section_head("Your impact", "🏆 Your Virtual Eco Rewards", anchor="rewards")
+
+r1, r2, r3, r4 = st.columns(4)
+
+with r1:
+    st.markdown(
+        f'<div class="reward-card"><div class="big">🌟 {rewards["total_points"]}</div>'
+        f'<div class="small">Virtual Eco Points</div></div>',
+        unsafe_allow_html=True
+    )
+
+with r2:
+    day_word = "day" if rewards["current_streak"] == 1 else "days"
+    st.markdown(
+        f'<div class="reward-card"><div class="big">🔥 {rewards["current_streak"]} {day_word}</div>'
+        f'<div class="small">Current streak</div></div>',
+        unsafe_allow_html=True
+    )
+
+with r3:
+    st.markdown(
+        f'<div class="reward-card"><div class="big">🏅 {rewards["longest_streak"]}</div>'
+        f'<div class="small">Longest streak (days)</div></div>',
+        unsafe_allow_html=True
+    )
+
+with r4:
+    st.markdown(
+        f'<div class="reward-card"><div class="big">📅 {rewards["active_days"]}</div>'
+        f'<div class="small">Active recycling days</div></div>',
+        unsafe_allow_html=True
+    )
+
+st.write("")
+
+goal_percent = min(int(rewards["today_events"] / DAILY_GOAL * 100), 100)
+st.markdown(
+    progress_bar(
+        goal_percent,
+        f"Today's goal: {rewards['today_events']} of {DAILY_GOAL} items "
+        f"recycled • {rewards['today_points']} virtual points earned today"
+    ),
+    unsafe_allow_html=True
+)
+
+if rewards["today_events"] == 0 and rewards["current_streak"] > 0:
+    st.caption(
+        f"Recycle an item today to keep your {rewards['current_streak']}-day "
+        f"streak alive!"
+    )
+elif rewards["today_events"] >= DAILY_GOAL:
+    st.caption("🎉 Daily goal complete — great work!")
+
+st.caption(
+    f"Each recorded item earns {POINTS_PER_EVENT} virtual Eco Points. They "
+    "have no cash value and cannot be redeemed for real-world rewards. "
+    "Recording an item in this app does not prove it was physically recycled."
+)
+
+# Explain (instead of hiding) any mismatch between items and points
+recorded_total = sum(
+    data["item_count"] for data in st.session_state.digital_twin_bins.values()
+)
+points_gap = rewa_logic.reward_gap(recorded_total, rewards["total_events"])
+
+if st.session_state.pending_rewards:
+    st.warning(
+        f"{len(st.session_state.pending_rewards)} recorded item(s) are "
+        "waiting for their Eco Points to be saved. ReWA retries automatically."
+    )
+elif points_gap:
+    st.info(
+        f"ℹ️ {points_gap} item(s) in your bins have no Eco Points. This "
+        "happens for items recorded before rewards existed, or after "
+        "“Reset Eco Points” (which clears points but keeps your item "
+        "history). Points are never added retroactively, so nothing is "
+        "counted twice."
+    )
+
+render_eco_extras(rewards)
+
+# ---- Reset Eco Points (two-step confirmation) ----
+has_rewards = (
+    rewards["total_points"] > 0
+    or rewards["total_events"] > 0
+    or rewards["active_days"] > 0
+)
+
+if not st.session_state.confirm_reset_rewards:
+    reset_btn_col, _reset_space = st.columns([1, 3])
+    with reset_btn_col:
+        if st.button(
+            "🗑️ Reset Eco Points",
+            use_container_width=True,
+            disabled=not has_rewards,
+            key="reset_rewards_start",
+            help="Delete all Eco Points and streaks (asks for confirmation first)."
+        ):
+            st.session_state.confirm_reset_rewards = True
+            st.rerun()
+else:
+    st.markdown(
+        '<div class="reset-panel">'
+        '<div class="reset-title">⚠️ Are you absolutely sure?</div>'
+        '<p class="reset-text">This will permanently delete '
+        f'<b>{rewards["total_points"]} Virtual Eco Points</b>, your streaks and your '
+        'rewarded-event history. This cannot be undone.</p>'
+        '</div>',
+        unsafe_allow_html=True
+    )
+
+    confirm_col, cancel_col, _confirm_space = st.columns([1.3, 1, 2])
+
+    with confirm_col:
+        if st.button(
+            "✅ Yes, delete my Eco Points",
+            type="primary",
+            use_container_width=True,
+            key="reset_rewards_confirm"
+        ):
+            try:
+                clear_all_rewards()
+                st.session_state.confirm_reset_rewards = False
+                st.session_state.flash = (
+                    "success",
+                    "🧹 All Eco Points and streaks have been reset."
+                )
+            except Exception as error:
+                st.session_state.confirm_reset_rewards = False
+                st.session_state.flash = (
+                    "warning",
+                    f"Could not reset Eco Points: {error}"
+                )
+            st.rerun()
+
+    with cancel_col:
+        if st.button(
+            "↩️ Cancel",
+            use_container_width=True,
+            key="reset_rewards_cancel"
+        ):
+            st.session_state.confirm_reset_rewards = False
+            st.rerun()
+
+
 # =====================================================================
 # CORE FLOW (TOP OF PAGE): 1. ADD PHOTO -> 2. AI ANALYSIS -> 3. SORT
 # =====================================================================
@@ -3718,159 +3872,6 @@ if eval_report_file.exists():
 else:
     st.info("ℹ️ **Model Performance:** Not evaluated yet on labeled dataset. Run `python evaluate_model.py` with labeled test photos in `eval_data/` to generate a real evaluation report.")
 
-
-# ---------- ECO REWARDS ----------
-if st.session_state.pending_rewards:
-    rewa_logic.retry_pending_rewards(
-        st.session_state.pending_rewards, _award_in_database
-    )
-
-rewards = get_summary()
-
-st.markdown("---")
-section_head("Your impact", "🏆 Your Virtual Eco Rewards", anchor="rewards")
-
-r1, r2, r3, r4 = st.columns(4)
-
-with r1:
-    st.markdown(
-        f'<div class="reward-card"><div class="big">🌟 {rewards["total_points"]}</div>'
-        f'<div class="small">Virtual Eco Points</div></div>',
-        unsafe_allow_html=True
-    )
-
-with r2:
-    day_word = "day" if rewards["current_streak"] == 1 else "days"
-    st.markdown(
-        f'<div class="reward-card"><div class="big">🔥 {rewards["current_streak"]} {day_word}</div>'
-        f'<div class="small">Current streak</div></div>',
-        unsafe_allow_html=True
-    )
-
-with r3:
-    st.markdown(
-        f'<div class="reward-card"><div class="big">🏅 {rewards["longest_streak"]}</div>'
-        f'<div class="small">Longest streak (days)</div></div>',
-        unsafe_allow_html=True
-    )
-
-with r4:
-    st.markdown(
-        f'<div class="reward-card"><div class="big">📅 {rewards["active_days"]}</div>'
-        f'<div class="small">Active recycling days</div></div>',
-        unsafe_allow_html=True
-    )
-
-st.write("")
-
-goal_percent = min(int(rewards["today_events"] / DAILY_GOAL * 100), 100)
-st.markdown(
-    progress_bar(
-        goal_percent,
-        f"Today's goal: {rewards['today_events']} of {DAILY_GOAL} items "
-        f"recycled • {rewards['today_points']} virtual points earned today"
-    ),
-    unsafe_allow_html=True
-)
-
-if rewards["today_events"] == 0 and rewards["current_streak"] > 0:
-    st.caption(
-        f"Recycle an item today to keep your {rewards['current_streak']}-day "
-        f"streak alive!"
-    )
-elif rewards["today_events"] >= DAILY_GOAL:
-    st.caption("🎉 Daily goal complete — great work!")
-
-st.caption(
-    f"Each recorded item earns {POINTS_PER_EVENT} virtual Eco Points. They "
-    "have no cash value and cannot be redeemed for real-world rewards. "
-    "Recording an item in this app does not prove it was physically recycled."
-)
-
-# Explain (instead of hiding) any mismatch between items and points
-recorded_total = sum(
-    data["item_count"] for data in st.session_state.digital_twin_bins.values()
-)
-points_gap = rewa_logic.reward_gap(recorded_total, rewards["total_events"])
-
-if st.session_state.pending_rewards:
-    st.warning(
-        f"{len(st.session_state.pending_rewards)} recorded item(s) are "
-        "waiting for their Eco Points to be saved. ReWA retries automatically."
-    )
-elif points_gap:
-    st.info(
-        f"ℹ️ {points_gap} item(s) in your bins have no Eco Points. This "
-        "happens for items recorded before rewards existed, or after "
-        "“Reset Eco Points” (which clears points but keeps your item "
-        "history). Points are never added retroactively, so nothing is "
-        "counted twice."
-    )
-
-render_eco_extras(rewards)
-
-# ---- Reset Eco Points (two-step confirmation) ----
-has_rewards = (
-    rewards["total_points"] > 0
-    or rewards["total_events"] > 0
-    or rewards["active_days"] > 0
-)
-
-if not st.session_state.confirm_reset_rewards:
-    reset_btn_col, _reset_space = st.columns([1, 3])
-    with reset_btn_col:
-        if st.button(
-            "🗑️ Reset Eco Points",
-            use_container_width=True,
-            disabled=not has_rewards,
-            key="reset_rewards_start",
-            help="Delete all Eco Points and streaks (asks for confirmation first)."
-        ):
-            st.session_state.confirm_reset_rewards = True
-            st.rerun()
-else:
-    st.markdown(
-        '<div class="reset-panel">'
-        '<div class="reset-title">⚠️ Are you absolutely sure?</div>'
-        '<p class="reset-text">This will permanently delete '
-        f'<b>{rewards["total_points"]} Virtual Eco Points</b>, your streaks and your '
-        'rewarded-event history. This cannot be undone.</p>'
-        '</div>',
-        unsafe_allow_html=True
-    )
-
-    confirm_col, cancel_col, _confirm_space = st.columns([1.3, 1, 2])
-
-    with confirm_col:
-        if st.button(
-            "✅ Yes, delete my Eco Points",
-            type="primary",
-            use_container_width=True,
-            key="reset_rewards_confirm"
-        ):
-            try:
-                clear_all_rewards()
-                st.session_state.confirm_reset_rewards = False
-                st.session_state.flash = (
-                    "success",
-                    "🧹 All Eco Points and streaks have been reset."
-                )
-            except Exception as error:
-                st.session_state.confirm_reset_rewards = False
-                st.session_state.flash = (
-                    "warning",
-                    f"Could not reset Eco Points: {error}"
-                )
-            st.rerun()
-
-    with cancel_col:
-        if st.button(
-            "↩️ Cancel",
-            use_container_width=True,
-            key="reset_rewards_cancel"
-        ):
-            st.session_state.confirm_reset_rewards = False
-            st.rerun()
 
 # ---------- RECYCLING ANALYTICS ----------
 st.markdown("---")
